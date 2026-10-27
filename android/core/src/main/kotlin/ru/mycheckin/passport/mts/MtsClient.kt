@@ -3,8 +3,9 @@ package ru.mycheckin.passport.mts
 import ru.mycheckin.passport.PassportData
 import java.net.HttpURLConnection
 import java.net.URI
-import java.time.format.DateTimeFormatter
+import java.net.URLEncoder
 import java.util.Base64
+import java.util.UUID
 
 data class HttpResponse(val code: Int, val body: String, val headers: Map<String, String> = emptyMap())
 
@@ -13,7 +14,7 @@ fun interface Http {
     fun request(method: String, url: String, headers: Map<String, String>, body: String?): HttpResponse
 }
 
-class UrlConnectionHttp(private val timeoutMs: Int = 20_000) : Http {
+class UrlConnectionHttp(private val timeoutMs: Int = 30_000) : Http {
     override fun request(method: String, url: String, headers: Map<String, String>, body: String?): HttpResponse {
         val conn = URI(url).toURL().openConnection() as HttpURLConnection
         try {
@@ -37,93 +38,29 @@ class UrlConnectionHttp(private val timeoutMs: Int = 20_000) : Http {
 }
 
 /**
- * Настройки МТС Бизнес API. Токен выдаётся по Consumer Key / Consumer Secret
- * из личного кабинета (раздел «API для бизнеса»). Адрес и тело запроса внесения
- * персональных данных задаются в настройках — по статье справки
- * «Как внести персональные данные пользователя номера с помощью МТС Бизнес API».
+ * Доступ к МТС Бизнес API. [login] и [password] — «Логин и пароль для интеграции»
+ * из личного кабинета МТС Бизнес (раздел «API для бизнеса», рядом с подключённым пакетом).
+ * В документации МТС их также называют Consumer Key и Consumer Secret.
  */
 data class MtsConfig(
-    val consumerKey: String,
-    val consumerSecret: String,
-    val submitUrl: String,
-    val submitMethod: String = "POST",
-    val bodyTemplate: String = DEFAULT_TEMPLATE,
-    val tokenUrl: String = "https://api.mts.ru/token",
+    val login: String,
+    val password: String,
+    val tokenUrl: String = DEFAULT_TOKEN_URL,
+    val apiBaseUrl: String = DEFAULT_API_BASE,
 ) {
+    val isConfigured: Boolean get() = login.isNotBlank() && password.isNotBlank()
+
     companion object {
-        /** Шаблон-заготовка: названия полей нужно сверить со справкой МТС. */
-        val DEFAULT_TEMPLATE = """
-            {
-              "msisdn": "{{phone}}",
-              "lastName": "{{surname}}",
-              "firstName": "{{name}}",
-              "middleName": "{{patronymic}}",
-              "gender": "{{sex}}",
-              "birthDate": "{{birth_date}}",
-              "birthPlace": "{{birth_place}}",
-              "citizenship": "{{citizenship}}",
-              "document": {
-                "type": "PASSPORT_RF",
-                "series": "{{series}}",
-                "number": "{{number}}",
-                "issueDate": "{{issue_date}}",
-                "issuedBy": "{{issued_by}}",
-                "divisionCode": "{{division_code}}"
-              }
-            }
-        """.trimIndent()
+        const val DEFAULT_TOKEN_URL = "https://api.mts.ru/token"
+        const val DEFAULT_API_BASE = "https://api.mts.ru/b2b/v1"
     }
 }
 
 class MtsApiException(message: String, val response: HttpResponse? = null) : Exception(message)
 
-/** Подстановка значений в шаблон {{ключ}} с экранированием для JSON. */
-object Template {
-    private val PLACEHOLDER = Regex("\\{\\{\\s*([a-z_]+)\\s*}}")
-
-    fun placeholders(template: String): Set<String> = PLACEHOLDER.findAll(template).map { it.groupValues[1] }.toSet()
-
-    fun render(template: String, values: Map<String, String?>): String = PLACEHOLDER.replace(template) { m ->
-        val key = m.groupValues[1]
-        require(key in values) { "Неизвестное поле в шаблоне: {{$key}}" }
-        jsonEscape(values[key].orEmpty())
-    }
-
-    private fun jsonEscape(s: String) = buildString {
-        for (c in s) when (c) {
-            '"' -> append("\\\"")
-            '\\' -> append("\\\\")
-            '\n' -> append("\\n")
-            '\r' -> append("\\r")
-            '\t' -> append("\\t")
-            else -> if (c < ' ') append("\\u%04x".format(c.code)) else append(c)
-        }
-    }
-
-    val KEYS = listOf(
-        "phone", "surname", "name", "patronymic", "sex", "sex_ru", "birth_date", "birth_date_ru", "birth_place",
-        "citizenship", "series", "number", "series_number", "issue_date", "issue_date_ru", "issued_by", "division_code",
-    )
-
-    /** Значения для шаблона: даты в ISO (birth_date) и по-русски (birth_date_ru). */
-    fun values(p: PassportData, phone: String): Map<String, String?> {
-        val ru = DateTimeFormatter.ofPattern("dd.MM.yyyy")
-        return mapOf(
-            "phone" to phone.filter { it.isDigit() }.let { if (it.length == 10) "7$it" else it.replaceFirst(Regex("^8(?=\\d{10}$)"), "7") },
-            "surname" to p.surname, "name" to p.name, "patronymic" to p.patronymic,
-            "sex" to p.sex?.toString(), "sex_ru" to when (p.sex) { 'M' -> "МУЖ"; 'F' -> "ЖЕН"; else -> null },
-            "birth_date" to p.birthDate?.toString(), "birth_date_ru" to p.birthDate?.format(ru),
-            "birth_place" to p.birthPlace, "citizenship" to (p.citizenship ?: "RUS"),
-            "series" to p.series, "number" to p.number, "series_number" to p.series.orEmpty() + p.number.orEmpty(),
-            "issue_date" to p.issueDate?.toString(), "issue_date_ru" to p.issueDate?.format(ru),
-            "issued_by" to p.issuedBy, "division_code" to p.divisionCode,
-        )
-    }
-}
-
 /**
  * Клиент МТС Бизнес API. Все вызовы (включая получение токена) проходят через
- * [limiter]; токен кешируется до истечения, чтобы не тратить лишние вызовы.
+ * [limiter]; токен кешируется до истечения (живёт 1 час), чтобы не тратить лишние вызовы.
  */
 class MtsClient(
     private val config: MtsConfig,
@@ -131,6 +68,7 @@ class MtsClient(
     private val http: Http = UrlConnectionHttp(),
     private val clock: RateLimiter.Clock = RateLimiter.Clock.System,
     private val maxRetries: Int = 3,
+    private val newMessageId: () -> String = { UUID.randomUUID().toString() },
 ) {
     private var token: String? = null
     private var tokenExpiresAt = 0L
@@ -160,36 +98,85 @@ class MtsClient(
         val cached = token
         if (!force && cached != null && clock.nowMillis() < tokenExpiresAt) return cached
         requireHttps(config.tokenUrl)
-        require(config.consumerKey.isNotBlank() && config.consumerSecret.isNotBlank()) { "Не заданы Consumer Key / Consumer Secret" }
-        val basic = Base64.getEncoder().encodeToString("${config.consumerKey}:${config.consumerSecret}".toByteArray())
+        require(config.isConfigured) { "Не заданы логин и пароль для интеграции МТС Бизнес API" }
+        val basic = Base64.getEncoder().encodeToString("${config.login.trim()}:${config.password.trim()}".toByteArray())
         val r = call(
             "POST", config.tokenUrl,
-            mapOf("Authorization" to "Basic $basic", "Content-Type" to "application/x-www-form-urlencoded"),
+            mapOf(
+                "Authorization" to "Basic $basic",
+                "Content-Type" to "application/x-www-form-urlencoded",
+                "Accept" to "application/json",
+            ),
             "grant_type=client_credentials",
         )
-        if (r.code != 200) throw MtsApiException("Не удалось получить токен: HTTP ${r.code}", r)
-        val access = Regex("\"access_token\"\\s*:\\s*\"([^\"]+)\"").find(r.body)?.groupValues?.get(1)
-            ?: throw MtsApiException("В ответе нет access_token", r)
-        val expiresIn = Regex("\"expires_in\"\\s*:\\s*(\\d+)").find(r.body)?.groupValues?.get(1)?.toLong() ?: 3600
+        if (r.code == 400 || r.code == 401) {
+            throw MtsApiException("МТС не принял логин и пароль для интеграции (HTTP ${r.code}). Проверьте их в ЛК МТС Бизнес → API для бизнеса.", r)
+        }
+        if (r.code != 200) throw MtsApiException("Не удалось получить токен: HTTP ${r.code}. ${PersonalDataApi.describeHttpError(r.body)}", r)
+        val j = Json.parseOrNull(r.body)
+        val access = j.field("access_token").str()?.ifBlank { null } ?: throw MtsApiException("В ответе нет access_token", r)
+        val expiresIn = j.field("expires_in").str()?.toLongOrNull() ?: 3600
         token = access
         // Обновляем за минуту до истечения.
         tokenExpiresAt = clock.nowMillis() + maxOf(0, expiresIn - 60) * 1000
         return access
     }
 
-    /** Отправить данные паспорта. При 401 токен обновляется и запрос повторяется один раз. */
-    fun submit(values: Map<String, String?>): HttpResponse {
-        require(config.submitUrl.isNotBlank()) { "Не задан адрес метода внесения персональных данных" }
-        requireHttps(config.submitUrl)
-        val body = Template.render(config.bodyTemplate, values)
-        val url = Template.render(config.submitUrl, values)  // в адресе тоже можно {{phone}}
+    /** Авторизованный вызов метода API. При 401 токен обновляется и запрос повторяется один раз. */
+    private fun api(method: String, url: String, extraHeaders: Map<String, String>, body: String?): HttpResponse {
+        requireHttps(url)
         fun send(t: String) = call(
-            config.submitMethod, url,
-            mapOf("Authorization" to "Bearer $t", "Content-Type" to "application/json; charset=utf-8", "Accept" to "application/json"),
+            method, url,
+            linkedMapOf(
+                "Authorization" to "Bearer $t",
+                "Content-Type" to "application/json",
+                "Accept" to "application/json",
+            ) + extraHeaders,
             body,
         )
         var r = send(token())
         if (r.code == 401) r = send(token(force = true))
+        if (r.code !in 200..299) {
+            throw MtsApiException("МТС ответил HTTP ${r.code}: ${PersonalDataApi.describeHttpError(r.body)}", r)
+        }
         return r
+    }
+
+    private fun url(path: String) = config.apiBaseUrl.trimEnd('/') + path
+
+    /**
+     * Внести персональные данные пользователя номера (гражданин РФ, паспорт РФ).
+     * Возвращает номер заявки (MessageId) — по нему проверяется статус [operationResult].
+     */
+    fun submitPersonalData(p: PassportData, phone: String, address: RegAddress? = null): SubmitResult {
+        val msisdn = PersonalDataApi.normalizeMsisdn(phone)
+        val problems = PersonalDataApi.problems(p, msisdn, address)
+        require(problems.isEmpty()) { problems.joinToString("\n") }
+        val body = PersonalDataApi.changeBody(p, msisdn!!, newMessageId(), address)
+        val r = api(
+            "POST", url(PersonalDataApi.CHANGE_PATH),
+            mapOf("x-soap-action" to PersonalDataApi.CHANGE_SOAP_ACTION, "X-MTS-MSISDN" to msisdn),
+            body,
+        )
+        return PersonalDataApi.parseSubmit(r.body)
+    }
+
+    /** Статус заявки на внесение данных: Completed / InProgress / Faulted. */
+    fun operationResult(phone: String, messageId: String): OperationResult {
+        val msisdn = PersonalDataApi.normalizeMsisdn(phone) ?: throw IllegalArgumentException("Неверный номер телефона")
+        val r = api(
+            "POST", url(PersonalDataApi.RESULT_PATH),
+            mapOf("x-soap-action" to PersonalDataApi.RESULT_SOAP_ACTION, "X-MTS-MSISDN" to msisdn),
+            PersonalDataApi.resultBody(messageId),
+        )
+        return PersonalDataApi.parseResult(r.body, msisdn)
+    }
+
+    /** Статус подтверждения данных на номере через Госуслуги. */
+    fun confirmationStatus(phone: String): ConfirmationStatus {
+        val msisdn = PersonalDataApi.normalizeMsisdn(phone) ?: throw IllegalArgumentException("Неверный номер телефона")
+        val q = URLEncoder.encode(msisdn, "UTF-8")
+        val r = api("GET", url(PersonalDataApi.INFO_PATH) + "?contactMedium.phoneNumber=$q", emptyMap(), null)
+        return PersonalDataApi.parseConfirmation(r.body)
     }
 }

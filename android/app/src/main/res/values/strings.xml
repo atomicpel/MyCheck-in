@@ -12,6 +12,7 @@
     <string name="btn_torch">Фонарик</string>
     <string name="btn_manual">Вручную</string>
     <string name="btn_settings">Настройки</string>
+    <string name="btn_history">Заявки</string>
     <string name="status_reading_rest">MRZ прочитана. Распознаю остальные поля…</string>
     <string name="copied">Скопировано</string>
 </resources>

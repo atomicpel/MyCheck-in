@@ -34,23 +34,96 @@ class MtsTest {
         assertFailsWith<RateLimiter.MonthlyLimitExceeded> { limiter.acquire() }
     }
 
-    private fun values(): Map<String, String?> {
-        val (l1, l2) = Mrz.build("Иванов", "Иван", "Иванович", "4601", "123456", 'M',
-            LocalDate.of(1990, 3, 15), LocalDate.of(2010, 6, 20), "770-120")
-        val p = Mrz.parse(l1, l2, LocalDate.of(2026, 10, 27)).apply { issuedBy = "ОТДЕЛОМ \"УФМС\"" }
-        return Template.values(p, "8 (912) 345-67-89")
+    private fun passport() = Mrz.build("Иванов", "Иван", "Иванович", "4601", "123456", 'M',
+        LocalDate.of(1990, 3, 15), LocalDate.of(2010, 6, 20), "770-120").let { (l1, l2) ->
+        Mrz.parse(l1, l2, LocalDate.of(2026, 10, 27)).apply {
+            issuedBy = "ОТДЕЛОМ \"УФМС\" РОССИИ"
+            birthPlace = "ГОР. МОСКВА"
+        }
     }
 
-    @Test fun templateRendersAndEscapes() {
-        val v = values()
-        assertEquals("79123456789", v["phone"])
-        val body = Template.render("""{"n":"{{surname}}","d":"{{birth_date}}","by":"{{issued_by}}","p":"{{phone}}"}""", v)
-        assertEquals("""{"n":"Иванов","d":"1990-03-15","by":"ОТДЕЛОМ \"УФМС\"","p":"79123456789"}""", body)
-        assertTrue(Template.placeholders(MtsConfig.DEFAULT_TEMPLATE).all { it in Template.KEYS })
-        assertFailsWith<IllegalArgumentException> { Template.render("{{unknown}}", v) }
+    @Test fun normalizesPhone() {
+        assertEquals("79123456789", PersonalDataApi.normalizeMsisdn("8 (912) 345-67-89"))
+        assertEquals("79123456789", PersonalDataApi.normalizeMsisdn("+7 912 345 67 89"))
+        assertEquals("79123456789", PersonalDataApi.normalizeMsisdn("9123456789"))
+        assertEquals(null, PersonalDataApi.normalizeMsisdn("84951234567"))
+        assertEquals(null, PersonalDataApi.normalizeMsisdn("12345"))
     }
 
-    @Test fun tokenIsCachedAndRefreshedOn401AndRetriedOn429() {
+    @Test fun changeBodyMatchesMtsSpec() {
+        val body = PersonalDataApi.changeBody(passport(), "79123456789", "guid-1", RegAddress(city = "Керчь", house = "5", zip = "298300"))
+        val j = Json.parse(body)
+        val item = j.path("request", "Items").list().single()
+        assertEquals("79123456789", item.field("Msisdn"))
+        val u = item.field("UserData")
+        assertEquals("Create", u.field("Action"))
+        assertEquals("1990-03-15T00:00:00", u.field("Birthday"))
+        assertEquals("Male", u.field("Gender"))
+        assertEquals("ГОР. МОСКВА", u.field("BirthPlace"))
+        assertEquals(false, u.field("IsEntrepreneur"))
+        assertEquals("1", u.path("LegalCategory", "Code"))
+        val doc = u.field("Identifications").list().single()
+        assertEquals("21", doc.path("DocumentType", "Code"))
+        assertEquals("RU", doc.path("Country", "Code"))
+        assertEquals("4601", doc.field("DocumentSeries"))
+        assertEquals("123456", doc.field("DocumentNumber"))
+        assertEquals("2010-06-20T00:00:00", doc.field("DateIssued"))
+        assertEquals("ОТДЕЛОМ \"УФМС\" РОССИИ", doc.field("Issuer"))
+        assertEquals("770-120", doc.field("IssuerCode"))
+        val n = u.field("Names").list().single()
+        assertEquals(listOf("Иванов", "Иван", "Иванович", "1"), listOf(n.field("SurName"), n.field("FirstName"), n.field("SecondName"), n.path("Language", "Code")))
+        val a = u.field("Addresses").list().single()
+        assertEquals("Россия", a.field("Country"))
+        assertEquals("RegAddress", a.field("AddressTypes"))
+        assertEquals(null, a.field("Street"))          // пустые поля не передаются
+        val si = j.field("SubscriberInformation")
+        assertEquals(listOf("guid-1", "DB:", "MobileAPI", "MTSBusinessAPI"),
+            listOf(si.field("MessageId"), si.field("ReplyToURL"), si.field("SubscriberName"), si.field("OperatorType")))
+        // Без адреса блок Addresses не передаётся, без отчества — SecondName.
+        val p2 = passport().apply { patronymic = null; sex = 'F' }
+        val u2 = Json.parse(PersonalDataApi.changeBody(p2, "79123456789", "g", RegAddress())).path("request", "Items").list()[0].field("UserData")
+        assertEquals(null, u2.field("Addresses"))
+        assertEquals("Female", u2.field("Gender"))
+        assertEquals(null, u2.field("Names").list()[0].field("SecondName"))
+    }
+
+    @Test fun problemsAreFoundBeforeSending() {
+        val p = passport().apply { divisionCode = "770120"; issuedBy = "" }
+        val pr = PersonalDataApi.problems(p, null)
+        assertTrue(pr.any { "телефон" in it.lowercase() })
+        assertTrue(pr.any { "Код подразделения" in it })
+        assertTrue(pr.any { "Кем выдан" in it || "кем выдан" in it })
+        assertTrue(PersonalDataApi.problems(passport(), "79123456789").isEmpty())
+    }
+
+    @Test fun parsesResponses() {
+        val ok = PersonalDataApi.parseSubmit("""{"response":{"ErrorCode":"","ErrorDescription":""},"MessageId":"abc-1"}""")
+        assertTrue(ok.accepted)
+        assertEquals("abc-1", ok.messageId)
+        val bad = PersonalDataApi.parseSubmit("""{"response":{"ErrorCode":"35","ErrorDescription":"Неверная серия"},"MessageId":"abc-2"}""")
+        assertTrue(!bad.accepted)
+        assertEquals("Неверная серия", bad.errorDescription)
+
+        val res = PersonalDataApi.parseResult("""{"response":{"Body":{"GetOperationResultResult":[{"Id":"1","OperationDate":"2026-10-27T12:00:00",
+            "BusinessProcessCommonResult":{"${'$'}type":"BusinessProcessCommonBulkResult","Objects":[{"Object":{"EntityType":"PhysicalResource","Msisdn":"79123456789"},
+            "OperationStatus":"Faulted","Errors":[{"Message":"Документ недействителен","Code":"77"}]}],"State":"Faulted","Errors":[]}}]}}}""", "79123456789")
+        assertEquals("Faulted", res.status)
+        assertEquals("Отклонено", res.title)
+        assertEquals(listOf("Документ недействителен (код 77)"), res.errors)
+
+        val conf = PersonalDataApi.parseConfirmation("""[{"name":"x","characteristic":[{"name":"Other","value":"1"},{"name":"PersonalDataConfirmation","value":"WaitingForAcceptance"}]}]""")
+        assertEquals("WaitingForAcceptance", conf.code)
+        assertTrue("Госуслуги" in conf.description)
+    }
+
+    @Test fun jsonRoundTrip() {
+        val v = Json.parse("""{"a":[1,2.5,true,null,"x\"y\u0416"],"b":{}}""")
+        assertEquals(listOf(1L, 2.5, true, null, "x\"yЖ"), v.field("a"))
+        assertEquals("""{"s":"a\"b","n":[1,false]}""", Json.write(linkedMapOf("s" to "a\"b", "skip" to null, "n" to listOf(1, false))))
+        assertFailsWith<IllegalArgumentException> { Json.parse("{\"a\":}") }
+    }
+
+    @Test fun clientSendsHeadersRefreshesTokenAndRetries() {
         val clock = FakeClock()
         val calls = mutableListOf<String>()
         var submitCount = 0
@@ -60,35 +133,66 @@ class MtsTest {
                 url.endsWith("/token") -> {
                     assertTrue(headers.getValue("Authorization").startsWith("Basic "))
                     assertEquals("grant_type=client_credentials", body)
-                    HttpResponse(200, """{"access_token":"t${calls.size}","expires_in":3600}""")
+                    HttpResponse(200, """{"access_token":"t${calls.size}","token_type":"Bearer","expires_in":3600}""")
                 }
-                else -> {
+                url.endsWith("/PersonalData/ChangePersonalData") -> {
                     submitCount++
                     when (submitCount) {
                         1 -> HttpResponse(429, "", mapOf("Retry-After" to "2"))
-                        2 -> HttpResponse(401, "")
-                        else -> HttpResponse(200, """{"ok":true}""").also {
+                        2 -> HttpResponse(401, """{"errorCode":1013,"errorMessage":"token expired"}""")
+                        else -> {
                             assertTrue(headers.getValue("Authorization").startsWith("Bearer t"))
-                            assertTrue(body!!.contains("\"lastName\": \"Иванов\""))
+                            assertEquals(PersonalDataApi.CHANGE_SOAP_ACTION, headers["x-soap-action"])
+                            assertTrue(headers.getValue("x-soap-action").startsWith("\""))
+                            assertEquals("79123456789", headers["X-MTS-MSISDN"])
+                            assertEquals("msg-1", Json.parse(body!!).path("SubscriberInformation", "MessageId"))
+                            HttpResponse(200, """{"response":{"ErrorCode":"","ErrorDescription":""},"MessageId":"srv-1"}""")
                         }
                     }
                 }
+                url.endsWith("/Operations/GetOperationResult") -> {
+                    assertEquals(PersonalDataApi.RESULT_SOAP_ACTION, headers["x-soap-action"])
+                    assertEquals("srv-1", Json.parse(body!!).path("request", "Body", "MessageId"))
+                    HttpResponse(200, """{"response":{"Body":{"GetOperationResultResult":[{"BusinessProcessCommonResult":{"Objects":[],"State":"InProgress","Errors":[]}}]}}}""")
+                }
+                url.contains("/PersonalData/PersonalDataInfo?contactMedium.phoneNumber=79123456789") -> {
+                    assertEquals("GET", method)
+                    HttpResponse(200, """[{"characteristic":[{"name":"PersonalDataConfirmation","value":"Activated"}]}]""")
+                }
+                else -> HttpResponse(404, "")
             }
         }
-        val client = MtsClient(
-            MtsConfig("key", "secret", submitUrl = "https://api.mts.ru/b2b/v1/test"),
-            RateLimiter(clock = clock), http, clock,
-        )
-        assertEquals(200, client.submit(values()).code)
+        val client = MtsClient(MtsConfig("login", "password"), RateLimiter(clock = clock), http, clock, newMessageId = { "msg-1" })
+        val r = client.submitPersonalData(passport(), "8 912 345-67-89")
+        assertTrue(r.accepted)
+        assertEquals("srv-1", r.messageId)
         assertEquals(2, calls.count { it.endsWith("/token") })   // первый + обновление после 401
         assertTrue(2000L in clock.sleeps)                          // пауза по Retry-After
-        // Второй вызов использует кешированный токен.
-        client.submit(values())
-        assertEquals(2, calls.count { it.endsWith("/token") })
+        assertEquals("InProgress", client.operationResult("89123456789", "srv-1").status)
+        assertTrue(client.confirmationStatus("+79123456789").confirmed)
+        assertEquals(2, calls.count { it.endsWith("/token") })   // токен кеширован
+    }
+
+    @Test fun httpErrorIsReported() {
+        val http = Http { _, url, _, _ ->
+            if (url.endsWith("/token")) HttpResponse(200, """{"access_token":"t","expires_in":3600}""")
+            else HttpResponse(400, """{"fault":{"message":"Invalid MSISDN","code":"900"}}""")
+        }
+        val client = MtsClient(MtsConfig("l", "p"), RateLimiter(clock = FakeClock()), http, FakeClock())
+        val e = assertFailsWith<MtsApiException> { client.confirmationStatus("79123456789") }
+        assertTrue("Invalid MSISDN" in e.message!!)
+    }
+
+    @Test fun badCredentialsAreExplained() {
+        val client = MtsClient(MtsConfig("l", "p"), RateLimiter(clock = FakeClock()), { _, _, _, _ -> HttpResponse(401, "") }, FakeClock())
+        val e = assertFailsWith<MtsApiException> { client.token() }
+        assertTrue("логин и пароль" in e.message!!)
     }
 
     @Test fun rejectsPlainHttp() {
-        val client = MtsClient(MtsConfig("k", "s", submitUrl = "http://example.com"), RateLimiter(), { _, _, _, _ -> HttpResponse(200, "") })
-        assertFailsWith<IllegalArgumentException> { client.submit(values()) }
+        val client = MtsClient(MtsConfig("k", "s", apiBaseUrl = "http://api.mts.ru/b2b/v1"), RateLimiter(), { _, _, _, _ -> HttpResponse(200, "{\"access_token\":\"t\"}") })
+        assertFailsWith<IllegalArgumentException> { client.submitPersonalData(passport(), "79123456789") }
+        val client2 = MtsClient(MtsConfig("k", "s", tokenUrl = "http://api.mts.ru/token"), RateLimiter(), { _, _, _, _ -> HttpResponse(200, "") })
+        assertFailsWith<IllegalArgumentException> { client2.token() }
     }
 }

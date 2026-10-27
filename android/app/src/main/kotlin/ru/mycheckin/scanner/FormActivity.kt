@@ -20,7 +20,8 @@ import ru.mycheckin.passport.PassportData
 import ru.mycheckin.passport.Validation
 import ru.mycheckin.passport.mts.MtsApiException
 import ru.mycheckin.passport.mts.RateLimiter
-import ru.mycheckin.passport.mts.Template
+import ru.mycheckin.passport.mts.PersonalDataApi
+import ru.mycheckin.passport.mts.RegAddress
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.time.format.DateTimeParseException
@@ -55,6 +56,12 @@ class FormActivity : AppCompatActivity() {
     private lateinit var fIssueDate: Ui.Field
     private lateinit var fDivisionCode: Ui.Field
     private lateinit var fIssuedBy: Ui.Field
+    private lateinit var fRegion: Ui.Field
+    private lateinit var fCity: Ui.Field
+    private lateinit var fStreet: Ui.Field
+    private lateinit var fHouse: Ui.Field
+    private lateinit var fApartment: Ui.Field
+    private lateinit var fZip: Ui.Field
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -102,12 +109,22 @@ class FormActivity : AppCompatActivity() {
         fDivisionCode = ui.field("Код подразделения", Ui.Kind.DATE, "000-000").also { root.addView(it.layout) }
         fIssuedBy = ui.field("Кем выдан", Ui.Kind.MULTILINE).also { root.addView(it.layout) }
 
+        root.addView(ui.section("Адрес регистрации (необязательно)"))
+        root.addView(ui.text("МТС принимает данные и без адреса. Если заполняете — со страницы «Место жительства».", 12f, secondary = true))
+        fRegion = ui.field("Регион", Ui.Kind.TEXT, "Например: Республика Крым").also { root.addView(it.layout) }
+        fCity = ui.field("Город / населённый пункт").also { root.addView(it.layout) }
+        fStreet = ui.field("Улица").also { root.addView(it.layout) }
+        fHouse = ui.field("Дом, корпус").also { root.addView(it.layout) }
+        fApartment = ui.field("Квартира").also { root.addView(it.layout) }
+        fZip = ui.field("Индекс", Ui.Kind.DIGITS, "6 цифр").also { root.addView(it.layout) }
+
         fill(original)
 
         sendButton = ui.button("Отправить в МТС", filled = true) { submit() }
         root.addView(sendButton.apply { (layoutParams as LinearLayout.LayoutParams).topMargin = ui.px(24) })
         root.addView(ui.button("Копировать") { copy() })
         root.addView(ui.button("Поделиться") { share() })
+        root.addView(ui.button("Отправленные заявки") { startActivity(Intent(this, HistoryActivity::class.java)) })
         root.addView(ui.button("Настройки МТС API") { startActivity(Intent(this, SettingsActivity::class.java)) })
         root.addView(ui.button("Сканировать следующий") { finish() })
 
@@ -166,13 +183,14 @@ class FormActivity : AppCompatActivity() {
 
     /** Собрать данные из формы и проверить. Возвращает null, если есть ошибки в полях. */
     private fun collect(): PassportData? {
-        val all = listOf(fPhone, fSurname, fName, fPatronymic, fBirthDate, fBirthPlace, fSeries, fNumber, fIssueDate, fDivisionCode, fIssuedBy)
+        val all = listOf(fPhone, fSurname, fName, fPatronymic, fBirthDate, fBirthPlace, fSeries, fNumber, fIssueDate, fDivisionCode, fIssuedBy, fZip)
         all.forEach { it.error = null }
         fun required(f: Ui.Field) { if (f.value.isEmpty()) f.error = "Обязательное поле" }
         listOf(fPhone, fSurname, fName, fBirthDate, fBirthPlace, fSeries, fNumber, fIssueDate, fDivisionCode, fIssuedBy).forEach(::required)
 
-        val digits = fPhone.value.filter(Char::isDigit)
-        if (fPhone.value.isNotEmpty() && !(digits.length == 10 || (digits.length == 11 && digits[0] in "78"))) fPhone.error = "Формат: +7 900 000-00-00"
+        if (fPhone.value.isNotEmpty() && PersonalDataApi.normalizeMsisdn(fPhone.value) == null) fPhone.error = "Мобильный номер: +7 9XX XXX-XX-XX"
+        if (fIssuedBy.value.length > 256) fIssuedBy.error = "Не длиннее 256 знаков"
+        if (fZip.value.isNotEmpty() && !Regex("\\d{6}").matches(fZip.value)) fZip.error = "6 цифр"
         val bd = parseDate(fBirthDate)
         if (fBirthDate.value.isNotEmpty() && bd == null) fBirthDate.error = "Формат: ДД.ММ.ГГГГ"
         val id = parseDate(fIssueDate)
@@ -206,45 +224,69 @@ class FormActivity : AppCompatActivity() {
         return Validation.validate(p)
     }
 
+    private fun address() = RegAddress(
+        region = fRegion.value, city = fCity.value, street = fStreet.value,
+        house = fHouse.value, apartment = fApartment.value, zip = fZip.value,
+    )
+
     private fun submit() {
         val p = collect() ?: return
         val config = MtsService.load(this)
-        if (!MtsService.isConfigured(config)) {
+        if (!config.isConfigured) {
             MaterialAlertDialogBuilder(this)
                 .setTitle("МТС API не настроен")
-                .setMessage("Укажите Consumer Key, Consumer Secret и адрес метода внесения персональных данных.")
+                .setMessage("Введите логин и пароль для интеграции из личного кабинета МТС Бизнес (раздел «API для бизнеса»).")
                 .setPositiveButton("Открыть настройки") { _, _ -> startActivity(Intent(this, SettingsActivity::class.java)) }
                 .setNegativeButton("Отмена", null)
                 .show()
             return
         }
-        val errors = p.issues.filter { it.level == Level.ERROR }
-        if (errors.isNotEmpty()) {
-            MaterialAlertDialogBuilder(this)
-                .setTitle("Есть ошибки в данных")
-                .setMessage(errors.joinToString("\n") { "• " + it.message } + "\n\nВсё равно отправить?")
-                .setPositiveButton("Отправить") { _, _ -> send(p) }
-                .setNegativeButton("Исправить", null)
-                .show()
-        } else {
-            send(p)
+        val blocking = PersonalDataApi.problems(p, PersonalDataApi.normalizeMsisdn(fPhone.value), address())
+        if (blocking.isNotEmpty()) {
+            MaterialAlertDialogBuilder(this).setTitle("МТС не примет такие данные")
+                .setMessage(blocking.joinToString("\n") { "• $it" }).setPositiveButton("Исправить", null).show()
+            return
         }
+        val errors = p.issues.filter { it.level == Level.ERROR }
+        val confirm = buildString {
+            append("Номер: ${HistoryActivity.formatPhone(PersonalDataApi.normalizeMsisdn(fPhone.value)!!)}\n")
+            append("Владелец: ${p.fullName}\n")
+            append("Паспорт: ${p.seriesNumber}\n")
+            if (errors.isNotEmpty()) append("\nЗамечания проверки:\n" + errors.joinToString("\n") { "• " + it.message } + "\n")
+            append("\nПосле отправки пользователю придёт SMS: данные нужно подтвердить на Госуслугах.")
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Отправить данные в МТС?")
+            .setMessage(confirm)
+            .setPositiveButton("Отправить") { _, _ -> send(p) }
+            .setNegativeButton("Отмена", null)
+            .show()
     }
 
     private fun send(p: PassportData) {
         sendButton.isEnabled = false
         sendButton.text = "Отправка…"
-        val values = Template.values(p, fPhone.value)
+        val phone = PersonalDataApi.normalizeMsisdn(fPhone.value)!!
+        val address = address()
+        val holder = listOfNotNull(p.surname, p.name?.take(1)?.plus("."), p.patronymic?.take(1)?.plus(".")).joinToString(" ")
         executor.execute {
+            var submission: Submission? = null
             val message: Pair<String, String> = try {
-                val r = MtsService.client(this).submit(values)
-                val body = r.body.take(1500)
-                if (r.code in 200..299) "Данные отправлены" to "HTTP ${r.code}\n\n$body"
-                else "Ошибка HTTP ${r.code}" to body.ifEmpty { "Пустой ответ" }
+                val r = MtsService.client(this).submitPersonalData(p, phone, address)
+                if (r.accepted) {
+                    submission = Submission(phone, holder, r.messageId!!, System.currentTimeMillis())
+                    MtsService.addSubmission(this, submission!!)
+                    "Заявка принята" to "Номер заявки: ${r.messageId}\n\n" +
+                        "Пользователю придёт SMS от МТС: данные нужно подтвердить на Госуслугах " +
+                        "(нужна подтверждённая учётная запись). Статус можно проверить сейчас или позже в «Отправленных заявках»."
+                } else {
+                    val code = r.errorCode.ifBlank { "нет номера заявки" }
+                    "МТС отклонил запрос" to listOf(r.errorDescription.ifBlank { null }, "Код: $code").filterNotNull().joinToString("\n")
+                }
             } catch (e: RateLimiter.MonthlyLimitExceeded) {
                 "Лимит тарифа" to (e.message ?: "")
             } catch (e: MtsApiException) {
-                "Ошибка МТС API" to listOfNotNull(e.message, e.response?.body?.take(1500)).joinToString("\n\n")
+                "Ошибка МТС API" to (e.message ?: "")
             } catch (e: Exception) {
                 "Не удалось отправить" to (e.message ?: e.javaClass.simpleName)
             }
@@ -252,10 +294,24 @@ class FormActivity : AppCompatActivity() {
             runOnUiThread {
                 sendButton.isEnabled = true
                 sendButton.text = "Отправить в МТС"
-                MaterialAlertDialogBuilder(this)
+                val dialog = MaterialAlertDialogBuilder(this)
                     .setTitle(message.first)
                     .setMessage(message.second + "\n\nВызовов API в этом месяце: ${limiter.usedThisMonth()} из ${limiter.monthlyLimit}")
                     .setPositiveButton("OK", null)
+                submission?.let { s -> dialog.setNeutralButton("Проверить статус") { _, _ -> checkStatus(s) } }
+                dialog.show()
+            }
+        }
+    }
+
+    private fun checkStatus(s: Submission) {
+        Toast.makeText(this, "Проверяю…", Toast.LENGTH_SHORT).show()
+        executor.execute {
+            val o = SubmissionChecker.check(this, s)
+            runOnUiThread {
+                MaterialAlertDialogBuilder(this).setTitle(o.title).setMessage(o.text)
+                    .setPositiveButton("OK", null)
+                    .setNeutralButton("Все заявки") { _, _ -> startActivity(Intent(this, HistoryActivity::class.java)) }
                     .show()
             }
         }

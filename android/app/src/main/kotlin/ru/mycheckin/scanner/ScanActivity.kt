@@ -90,6 +90,9 @@ class ScanActivity : AppCompatActivity() {
             ScanSession.clear()
             startActivity(Intent(this, FormActivity::class.java))
         }
+        findViewById<MaterialButton>(R.id.btn_history).setOnClickListener {
+            startActivity(Intent(this, HistoryActivity::class.java))
+        }
         findViewById<MaterialButton>(R.id.btn_settings).setOnClickListener {
             startActivity(Intent(this, SettingsActivity::class.java))
         }
