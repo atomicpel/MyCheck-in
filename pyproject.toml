@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ru-passport"
+version = "0.1.0"
+description = "Сканер и парсер внутреннего паспорта гражданина РФ (MRZ + визуальная зона)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+ocr = ["opencv-python-headless>=4.8", "numpy>=1.24", "pytesseract>=0.3.10", "Pillow>=10"]
+dev = ["pytest>=8"]
+
+[project.scripts]
+ru-passport = "ru_passport.cli:main"
+
+[tool.setuptools]
+packages = ["ru_passport"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
