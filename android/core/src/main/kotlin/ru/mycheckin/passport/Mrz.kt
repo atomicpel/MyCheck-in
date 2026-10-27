@@ -326,8 +326,14 @@ object Mrz {
 
         // --- Документ ---
         data.citizenship = l2.substring(10, 13)
-        data.series = l2.substring(0, 3) + l2[28]
-        data.number = l2.substring(3, 9)
+        // Если начало строки 2 не прочитано, серию/номер из неё не берём (там заполнитель).
+        if (shift > 0 && !repair.checks.getValue("number")) {
+            data.series = null
+            data.number = null
+        } else {
+            data.series = l2.substring(0, 3) + l2[28]
+            data.number = l2.substring(3, 9)
+        }
         data.sex = l2[20].takeIf { it == 'M' || it == 'F' }
         if (data.sex == null) data.add(Level.ERROR, "sex", "Не распознан пол: '${l2[20]}'")
         data.birthDate = resolveDate(l2.substring(13, 19), today)

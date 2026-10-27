@@ -10,6 +10,8 @@ import android.os.Bundle
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.util.Size
+import android.view.View
+import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -19,6 +21,8 @@ import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ExperimentalGetImage
 import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.ImageCapture
+import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.core.resolutionselector.ResolutionSelector
@@ -26,31 +30,41 @@ import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
-import com.google.android.gms.tasks.Tasks
 import com.google.android.material.button.MaterialButton
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
-import ru.mycheckin.passport.Mrz
 import ru.mycheckin.passport.MrzAccumulator
-import ru.mycheckin.passport.PassportData
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
+/**
+ * Экран камеры. По видеопотоку быстро читается MRZ (голосование по кадрам);
+ * как только она надёжно прочитана, делается полноразмерный снимок и
+ * распознаются остальные поля разворота.
+ */
 class ScanActivity : AppCompatActivity() {
 
     private lateinit var previewView: PreviewView
     private lateinit var overlay: MrzOverlayView
     private lateinit var status: TextView
+    private lateinit var progress: ProgressBar
     private lateinit var torchButton: MaterialButton
 
     private var camera: Camera? = null
-    private lateinit var executor: ExecutorService
-    private val recognizer by lazy { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
+    private var imageCapture: ImageCapture? = null
+    private lateinit var analysisExecutor: ExecutorService
+    private lateinit var workExecutor: ExecutorService
+    private val mrzReader by lazy { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
+    private val recognizer by lazy { Recognizer(applicationContext) }
     private val accumulator = MrzAccumulator(window = 8)
 
     @Volatile
     private var paused = false
+
+    /** Запасной путь, если ImageCapture недоступен: берём кадр анализа. */
+    @Volatile
+    private var grabFrame: ((Bitmap) -> Unit)? = null
 
     private val requestCamera = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) startCamera() else status.setText(R.string.no_camera_permission)
@@ -66,19 +80,23 @@ class ScanActivity : AppCompatActivity() {
         previewView = findViewById(R.id.preview)
         overlay = findViewById(R.id.overlay)
         status = findViewById(R.id.status)
+        progress = findViewById(R.id.progress)
         torchButton = findViewById(R.id.btn_torch)
-        executor = Executors.newSingleThreadExecutor()
+        analysisExecutor = Executors.newSingleThreadExecutor()
+        workExecutor = Executors.newSingleThreadExecutor()
 
         findViewById<MaterialButton>(R.id.btn_gallery).setOnClickListener { pickImage.launch("image/*") }
         findViewById<MaterialButton>(R.id.btn_manual).setOnClickListener {
-            paused = true
-            var opened = false
-            MrzDialog.show(this, "", "", onDismiss = { if (!opened) paused = false }) { l1, l2 ->
-                opened = true
-                openResult(l1, l2)
-            }
+            ScanSession.clear()
+            startActivity(Intent(this, FormActivity::class.java))
+        }
+        findViewById<MaterialButton>(R.id.btn_settings).setOnClickListener {
+            startActivity(Intent(this, SettingsActivity::class.java))
         }
         torchButton.setOnClickListener { camera?.cameraControl?.enableTorch(torchButton.isChecked) }
+
+        // Тяжёлую инициализацию (словарь Tesseract) делаем заранее, пока человек наводит камеру.
+        workExecutor.execute { runCatching { recognizer } }
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
             startCamera()
@@ -90,15 +108,24 @@ class ScanActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         paused = false
+        grabFrame = null
         accumulator.clear()
         overlay.progress = 0
+        setBusy(false)
         status.setText(R.string.status_searching)
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        executor.shutdown()
-        recognizer.close()
+        analysisExecutor.shutdown()
+        workExecutor.execute { recognizer.close() }
+        workExecutor.shutdown()
+        mrzReader.close()
+    }
+
+    private fun setBusy(busy: Boolean, text: String? = null) {
+        progress.visibility = if (busy) View.VISIBLE else View.GONE
+        text?.let { status.text = it }
     }
 
     private fun startCamera() {
@@ -116,29 +143,45 @@ class ScanActivity : AppCompatActivity() {
                 .setResolutionSelector(resolution)
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build()
-            analysis.setAnalyzer(executor, ::analyze)
+            analysis.setAnalyzer(analysisExecutor, ::analyze)
+            val capture = ImageCapture.Builder().setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY).build()
             provider.unbindAll()
-            camera = provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
+            camera = try {
+                provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis, capture)
+                    .also { imageCapture = capture }
+            } catch (e: IllegalArgumentException) {
+                // Камера не тянет три потока одновременно — обойдёмся кадром анализа.
+                imageCapture = null
+                provider.unbindAll()
+                provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
+            }
             torchButton.isEnabled = camera?.cameraInfo?.hasFlashUnit() == true
         }, ContextCompat.getMainExecutor(this))
     }
 
     @OptIn(markerClass = [ExperimentalGetImage::class])
     private fun analyze(proxy: ImageProxy) {
+        grabFrame?.let { consumer ->
+            grabFrame = null
+            val bmp = Recognizer.rotate(proxy.toBitmap(), proxy.imageInfo.rotationDegrees)
+            proxy.close()
+            consumer(bmp)
+            return
+        }
         val media = proxy.image
         if (media == null || paused) {
             proxy.close()
             return
         }
         val input = InputImage.fromMediaImage(media, proxy.imageInfo.rotationDegrees)
-        recognizer.process(input)
+        mrzReader.process(input)
             .addOnSuccessListener { text -> onFrameText(OcrText.rows(text)) }
             .addOnCompleteListener { proxy.close() }
     }
 
     /**
-     * Каждый кадр добавляется в голосование. Результат принимается, когда сошлись
-     * все контрольные цифры и минимум два кадра независимо дали ту же запись.
+     * Кадры копятся для голосования. Когда сошлись все контрольные цифры и минимум
+     * два кадра независимо дали ту же запись — снимаем фото для остальных полей.
      */
     private fun onFrameText(rows: String) {
         if (paused || !accumulator.addText(rows)) return
@@ -149,52 +192,80 @@ class ScanActivity : AppCompatActivity() {
         if (result.allChecksPassed && accumulator.agreeing(result) >= 2) {
             paused = true
             vibrate()
-            val (l1, l2) = result.mrzLines!!
-            openResult(l1, l2)
+            capture(result.mrzLines)
         }
     }
 
-    private fun scanImage(uri: Uri) {
-        paused = true
-        status.setText(R.string.status_processing)
-        executor.execute {
+    private fun capture(mrzHint: Pair<String, String>?) {
+        setBusy(true, getString(R.string.status_reading_rest))
+        val ic = imageCapture
+        if (ic == null) {
+            grabFrame = { bmp -> process(bmp, mrzHint) }
+            return
+        }
+        ic.takePicture(workExecutor, object : ImageCapture.OnImageCapturedCallback() {
+            override fun onCaptureSuccess(image: ImageProxy) {
+                val bmp = try {
+                    Recognizer.rotate(image.toBitmap(), image.imageInfo.rotationDegrees)
+                } finally {
+                    image.close()
+                }
+                process(bmp, mrzHint)
+            }
+
+            override fun onError(exception: ImageCaptureException) {
+                grabFrame = { bmp -> process(bmp, mrzHint) }
+            }
+        })
+    }
+
+    /** Полное распознавание (в фоне) и переход к форме. */
+    private fun process(bitmap: Bitmap, mrzHint: Pair<String, String>?) {
+        workExecutor.execute {
             val result = try {
-                decodeBitmap(uri)?.let(::bestFromBitmap)
+                recognizer.recognize(Recognizer.limit(bitmap), mrzHint)
             } catch (e: Exception) {
                 null
             }
             runOnUiThread {
-                val lines = result?.mrzLines
-                if (lines != null) {
-                    openResult(lines.first, lines.second)
-                } else {
+                if (result == null || (result.passport.mrzLines == null && result.passport.series == null)) {
                     paused = false
-                    status.setText(R.string.status_not_found)
+                    setBusy(false, getString(R.string.status_not_found))
                     Toast.makeText(this, R.string.status_not_found, Toast.LENGTH_LONG).show()
+                } else {
+                    ScanSession.passport = result.passport
+                    ScanSession.photo = result.photo
+                    startActivity(Intent(this, FormActivity::class.java))
                 }
             }
         }
     }
 
-    /** Фото может быть повёрнуто как угодно — пробуем все четыре ориентации. */
-    private fun bestFromBitmap(bitmap: Bitmap): PassportData? {
-        var best: PassportData? = null
-        for (rotation in intArrayOf(0, 90, 270, 180)) {
-            val text = Tasks.await(recognizer.process(InputImage.fromBitmap(bitmap, rotation)))
-            val data = Mrz.parseText(OcrText.rows(text)) ?: continue
-            if (best == null || score(data) > score(best)) best = data
-            if (data.allChecksPassed) break
+    private fun scanImage(uri: Uri) {
+        paused = true
+        setBusy(true, getString(R.string.status_processing))
+        workExecutor.execute {
+            val bmp = try {
+                decodeBitmap(uri)
+            } catch (e: Exception) {
+                null
+            }
+            if (bmp == null) {
+                runOnUiThread {
+                    paused = false
+                    setBusy(false, getString(R.string.status_not_found))
+                }
+            } else {
+                process(bmp, null)
+            }
         }
-        return best
     }
-
-    private fun score(d: PassportData) = d.checks.values.count { it } * 10 - d.corrections.size
 
     private fun decodeBitmap(uri: Uri): Bitmap? {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
         var sample = 1
-        while (maxOf(bounds.outWidth, bounds.outHeight) / sample > 3200) sample *= 2
+        while (maxOf(bounds.outWidth, bounds.outHeight) / sample > 4000) sample *= 2
         val opts = BitmapFactory.Options().apply { inSampleSize = sample }
         return contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) }
     }
@@ -203,13 +274,5 @@ class ScanActivity : AppCompatActivity() {
     private fun vibrate() {
         val vibrator = getSystemService(Vibrator::class.java) ?: return
         vibrator.vibrate(VibrationEffect.createOneShot(80, VibrationEffect.DEFAULT_AMPLITUDE))
-    }
-
-    private fun openResult(line1: String, line2: String) {
-        startActivity(
-            Intent(this, ResultActivity::class.java)
-                .putExtra(ResultActivity.EXTRA_LINE1, line1)
-                .putExtra(ResultActivity.EXTRA_LINE2, line2)
-        )
     }
 }

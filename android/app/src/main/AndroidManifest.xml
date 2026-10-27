@@ -1,13 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.VIBRATE" />
-    <!-- Паспортные данные не покидают телефон: доступ в интернет запрещён явно
-         (библиотеки ML Kit добавляют его для телеметрии). -->
-    <uses-permission android:name="android.permission.INTERNET" tools:node="remove" />
+    <!-- Интернет нужен только для отправки данных в МТС Бизнес API (только https). -->
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <application
         android:allowBackup="false"
@@ -15,6 +13,7 @@
         android:roundIcon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="true"
+        android:usesCleartextTraffic="false"
         android:theme="@style/Theme.Scanner">
 
         <activity
@@ -27,7 +26,13 @@
         </activity>
 
         <activity
-            android:name=".ResultActivity"
-            android:exported="false" />
+            android:name=".FormActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name=".SettingsActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
     </application>
 </manifest>

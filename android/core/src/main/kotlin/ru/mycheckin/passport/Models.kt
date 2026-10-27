@@ -18,6 +18,8 @@ class PassportData {
     var issueDate: LocalDate? = null
     var divisionCode: String? = null       // "770-120"
     var citizenship: String? = null        // "RUS"
+    var birthPlace: String? = null         // из визуальной зоны
+    var issuedBy: String? = null           // из визуальной зоны
 
     // Производные поля
     var region: String? = null
@@ -26,6 +28,7 @@ class PassportData {
     var status: Status? = null
 
     // Диагностика
+    var source: String = "mrz"             // mrz / mrz+viz / viz / manual
     var mrzLines: Pair<String, String>? = null
     val checks = linkedMapOf<String, Boolean>()
     val corrections = mutableListOf<String>()
@@ -69,7 +72,8 @@ class PassportData {
             "sex" to sex?.toString(), "birth_date" to birthDate?.toString(),
             "series" to series, "number" to number, "series_number" to seriesNumber,
             "issue_date" to issueDate?.toString(), "division_code" to divisionCode,
-            "citizenship" to citizenship, "region" to region,
+            "citizenship" to citizenship, "birth_place" to birthPlace, "issued_by" to issuedBy,
+            "region" to region, "source" to source,
             "valid_until" to validUntil?.toString(), "replace_deadline" to replaceDeadline?.toString(),
             "status" to status?.name?.lowercase(), "is_valid" to isValid, "confidence" to confidence,
             "mrz_lines" to mrzLines?.toList(), "checks" to checks, "corrections" to corrections,

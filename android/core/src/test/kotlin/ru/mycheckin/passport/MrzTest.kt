@@ -126,6 +126,7 @@ class MrzTest {
         assertEquals("770-120", d.divisionCode)
         assertFalse(d.checks.getValue("number"))
         assertTrue(d.issues.any { it.code == "line2_cut" })
+        assertNull(d.seriesNumber)  // не выдаём заполнитель за номер
     }
 
     @Test fun truncatedNameFlagged() {

@@ -46,6 +46,9 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
 
+    // Словарь Tesseract кладётся в assets при сборке (см. scripts/fetch-tessdata.sh).
+    androidResources { noCompress += "traineddata" }
+
     lint {
         checkReleaseBuilds = false
         abortOnError = false
@@ -66,6 +69,11 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:$camerax")
     implementation("androidx.camera:camera-view:$camerax")
 
-    // Распознавание текста на устройстве, модель встроена в APK (работает без интернета).
-    implementation("com.google.mlkit:text-recognition:16.0.1")
+    // Распознавание на устройстве, модели встроены в APK (работает без интернета).
+    implementation("com.google.mlkit:text-recognition:16.0.1")     // MRZ, цифры, даты
+    implementation("com.google.mlkit:face-detection:16.1.7")       // фото владельца
+    implementation("cz.adaptech.tesseract4android:tesseract4android:4.7.0")  // кириллица
+
+    // Зашифрованное хранение ключей МТС API
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
 }
