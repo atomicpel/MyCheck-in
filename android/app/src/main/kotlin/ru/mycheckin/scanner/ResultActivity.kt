@@ -32,7 +32,7 @@ class ResultActivity : AppCompatActivity() {
         private val RU = DateTimeFormatter.ofPattern("dd.MM.yyyy")
     }
 
-    private lateinit var data: PassportData
+    private lateinit var passport: PassportData
     private val dp by lazy { resources.displayMetrics.density }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -41,30 +41,30 @@ class ResultActivity : AppCompatActivity() {
     }
 
     private fun show(line1: String, line2: String) {
-        data = Validation.validate(Mrz.parse(line1, line2))
+        passport = Validation.validate(Mrz.parse(line1, line2))
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(px(20), px(40), px(20), px(28))
         }
         root.addView(banner())
-        field(root, "Фамилия", data.surname)
-        field(root, "Имя", data.name)
-        field(root, "Отчество", data.patronymic)
-        field(root, "Пол", when (data.sex) { 'M' -> "мужской"; 'F' -> "женский"; else -> null })
-        field(root, "Дата рождения", data.birthDate?.let {
+        field(root, "Фамилия", passport.surname)
+        field(root, "Имя", passport.name)
+        field(root, "Отчество", passport.patronymic)
+        field(root, "Пол", when (passport.sex) { 'M' -> "мужской"; 'F' -> "женский"; else -> null })
+        field(root, "Дата рождения", passport.birthDate?.let {
             "${it.format(RU)} (${Validation.ageOn(it, LocalDate.now())} лет)"
         })
-        field(root, "Серия и номер", data.seriesNumber)
-        field(root, "Дата выдачи", data.issueDate?.format(RU))
-        field(root, "Код подразделения", data.divisionCode)
-        field(root, "Регион выдачи (по серии)", data.region)
+        field(root, "Серия и номер", passport.seriesNumber)
+        field(root, "Дата выдачи", passport.issueDate?.format(RU))
+        field(root, "Код подразделения", passport.divisionCode)
+        field(root, "Регион выдачи (по серии)", passport.region)
         field(root, "Действителен до", when {
-            data.status == null -> null
-            data.validUntil == null -> "бессрочно"
-            else -> data.validUntil!!.format(RU)
+            passport.status == null -> null
+            passport.validUntil == null -> "бессрочно"
+            else -> passport.validUntil!!.format(RU)
         })
 
-        val problems = data.issues.filter { it.level != Level.INFO }
+        val problems = passport.issues.filter { it.level != Level.INFO }
         if (problems.isNotEmpty()) {
             section(root, "Замечания")
             problems.forEach { issue ->
@@ -73,11 +73,11 @@ class ResultActivity : AppCompatActivity() {
                 })
             }
         }
-        if (data.corrections.isNotEmpty()) {
+        if (passport.corrections.isNotEmpty()) {
             section(root, "Исправлено автоматически")
-            data.corrections.forEach { root.addView(text("• $it", 13f, secondary = true)) }
+            passport.corrections.forEach { root.addView(text("• $it", 13f, secondary = true)) }
         }
-        data.mrzLines?.let { (l1, l2) ->
+        passport.mrzLines?.let { (l1, l2) ->
             section(root, "Машиночитаемая запись")
             root.addView(text("$l1\n$l2", 11f).apply {
                 typeface = Typeface.MONOSPACE
@@ -92,7 +92,7 @@ class ResultActivity : AppCompatActivity() {
         buttons.addView(button(R.string.btn_copy, filled = true) { copy() })
         buttons.addView(button(R.string.btn_share) { share() })
         buttons.addView(button(R.string.btn_fix) {
-            val (l1, l2) = data.mrzLines ?: ("" to "")
+            val (l1, l2) = passport.mrzLines ?: ("" to "")
             MrzDialog.show(this, l1, l2) { a, b -> show(a, b) }
         })
         buttons.addView(button(R.string.btn_again) { finish() })
@@ -106,13 +106,13 @@ class ResultActivity : AppCompatActivity() {
 
     private fun banner(): View {
         val (color, title) = when {
-            data.status == PassportData.Status.EXPIRED -> R.color.bad to "Паспорт недействителен"
-            !data.isValid -> R.color.bad to "Данные не подтверждены"
-            data.status == PassportData.Status.REPLACEMENT_PERIOD -> R.color.warn to "Паспорт подлежит замене"
-            data.issues.any { it.level == Level.WARNING } -> R.color.warn to "Проверьте замечания"
+            passport.status == PassportData.Status.EXPIRED -> R.color.bad to "Паспорт недействителен"
+            !passport.isValid -> R.color.bad to "Данные не подтверждены"
+            passport.status == PassportData.Status.REPLACEMENT_PERIOD -> R.color.warn to "Паспорт подлежит замене"
+            passport.issues.any { it.level == Level.WARNING } -> R.color.warn to "Проверьте замечания"
             else -> R.color.ok to "Паспорт действителен"
         }
-        val checks = data.checks.values.count { it }
+        val checks = passport.checks.values.count { it }
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(px(18), px(16), px(18), px(16))
@@ -127,7 +127,7 @@ class ResultActivity : AppCompatActivity() {
                 setTextColor(Color.WHITE)
             })
             addView(TextView(context).apply {
-                text = "Контрольные суммы: $checks из 4 · уверенность ${(data.confidence * 100).toInt()}%"
+                text = "Контрольные суммы: $checks из 4 · уверенность ${(passport.confidence * 100).toInt()}%"
                 textSize = 14f
                 setTextColor(Color.argb(230, 255, 255, 255))
             })
@@ -167,11 +167,11 @@ class ResultActivity : AppCompatActivity() {
     }
 
     private fun summary(): String = buildString {
-        appendLine(data.fullName)
-        data.sex?.let { appendLine("Пол: " + if (it == 'M') "мужской" else "женский") }
-        data.birthDate?.let { appendLine("Дата рождения: ${it.format(RU)}") }
-        data.seriesNumber?.let { appendLine("Паспорт: $it") }
-        data.issueDate?.let { appendLine("Выдан: ${it.format(RU)}, код подразделения ${data.divisionCode ?: "—"}") }
+        appendLine(passport.fullName)
+        passport.sex?.let { appendLine("Пол: " + if (it == 'M') "мужской" else "женский") }
+        passport.birthDate?.let { appendLine("Дата рождения: ${it.format(RU)}") }
+        passport.seriesNumber?.let { appendLine("Паспорт: $it") }
+        passport.issueDate?.let { appendLine("Выдан: ${it.format(RU)}, код подразделения ${passport.divisionCode ?: "—"}") }
     }.trim()
 
     private fun copy() {
@@ -183,7 +183,7 @@ class ResultActivity : AppCompatActivity() {
     private fun share() {
         val send = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
-            putExtra(Intent.EXTRA_TEXT, summary() + "\n\n" + data.toJson())
+            putExtra(Intent.EXTRA_TEXT, summary() + "\n\n" + passport.toJson())
         }
         startActivity(Intent.createChooser(send, getString(R.string.btn_share)))
     }
