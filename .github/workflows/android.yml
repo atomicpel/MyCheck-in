@@ -41,6 +41,15 @@ jobs:
           SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
         run: ./gradlew :core:test :app:assembleRelease --stacktrace
 
+      # Паспортные данные не должны покидать телефон: сборка падает,
+      # если в итоговом APK оказалось разрешение на интернет.
+      - name: Verify APK
+        run: |
+          AAPT2="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/aapt2"
+          "$AAPT2" dump badging app/build/outputs/apk/release/app-release.apk \
+            | grep -E "^package:|sdkVersion|uses-permission|native-code" | tee badging.txt
+          ! grep -q "android.permission.INTERNET" badging.txt
+
       - name: Name APK
         run: cp app/build/outputs/apk/release/app-release.apk "../MyCheckIn-Scanner-${{ github.run_number }}.apk"
 
