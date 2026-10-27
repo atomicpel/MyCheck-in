@@ -69,3 +69,16 @@ def test_viz_value_rejected_if_check_digit_disagrees():
     bad = l2[:4] + "7" + l2[5:]
     d = parse_text(f"{l1}\n{bad}", viz_text=VIZ.replace("123456", "123450"), today=TODAY)
     assert not d.checks["number"] and not d.is_valid
+
+
+def test_line2_with_covered_start_is_aligned_and_restored_from_viz():
+    # Начало строки 2 закрыто пальцем: OCR видит только "...3456" + контрольную.
+    l1, l2 = build_mrz("Иванов", "Иван", "Иванович", "4601", "123456", "M",
+                       date(1990, 3, 15), date(2010, 6, 20), "770-120")
+    d = parse_text(f"{l1}\n{l2[5:]}", today=TODAY)
+    assert d.birth_date == date(1990, 3, 15) and d.division_code == "770-120"
+    assert not d.checks["number"] and any(i.code == "line2_cut" for i in d.issues)
+
+    d = parse_text(f"{l1}\n{l2[5:]}", viz_text=VIZ, today=TODAY)
+    assert d.mrz_lines[1] == l2 and all(d.checks.values())
+    assert d.series_number == "46 01 123456"

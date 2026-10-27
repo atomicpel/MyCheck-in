@@ -92,6 +92,25 @@ def _fit(line: str, anchor: Optional[str] = None) -> str:
     return line.ljust(LINE_LEN, "<")
 
 
+def align_line2(line: str) -> tuple[str, int]:
+    """Выровнять строку 2 по якорю: "RUS" стоит в позициях 11-13, пол и "<<<<<<<" — с 21-й.
+
+    Помогает, когда начало строки закрыто пальцем/бликом или к ней прилип мусор.
+    Возвращает (строка из 44 символов, сдвиг). Недостающие символы заполняются "<".
+    """
+    i = line.find("RUS")
+    if 0 <= i <= 20:
+        shift = 10 - i
+    else:
+        m = re.search(r"[MF]<{4,}", line)
+        shift = 20 - m.start() if m else 0
+    if shift > 0:
+        line = "<" * shift + line
+    elif shift < 0:
+        line = line[-shift:]
+    return _fit(line), shift
+
+
 def find_mrz_lines(text: str) -> Optional[tuple[str, str]]:
     """Найти две строки MRZ в произвольном тексте OCR.
 
@@ -302,8 +321,12 @@ def parse_mrz(line1: str, line2: str, today: Optional[date] = None) -> PassportD
     """Разобрать две строки MRZ. Ошибки OCR исправляются там, где это однозначно."""
     today = today or date.today()
     l1 = _fit(_clean(line1), "PN")
-    l2 = _fit(_clean(line2))
+    l2, shift = align_line2(_clean(line2))
     data = PassportData(source="mrz")
+    if shift > 0:
+        data.add("warning", "line2_cut", f"Начало строки 2 не прочитано ({shift} симв.) — серия/номер под вопросом")
+    elif shift < 0:
+        data.corrections.append(f"строка 2: отброшено {-shift} лишних символов в начале")
 
     if not re.match(r"P[NM<]R[UV][S5]", l1[:5]) and l1[2:5] != "RUS":
         data.add("error", "mrz_header", f"Строка 1 не похожа на паспорт РФ: {l1[:5]!r}")

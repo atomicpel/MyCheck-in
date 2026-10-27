@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Сканер паспорта</string>
+    <string name="scan_title">Паспорт РФ</string>
+    <string name="scan_hint">Наведите рамку на две нижние строки разворота с фото (с символами &lt;&lt;&lt;)</string>
+    <string name="status_searching">Ищу машиночитаемую запись…</string>
+    <string name="status_progress">Кадров: %1$d · контрольных сумм сошлось: %2$d из 4</string>
+    <string name="status_processing">Обрабатываю фото…</string>
+    <string name="status_not_found">На фото не найдена машиночитаемая запись</string>
+    <string name="no_camera_permission">Нет доступа к камере. Можно выбрать фото из галереи.</string>
+    <string name="btn_gallery">Фото</string>
+    <string name="btn_torch">Фонарик</string>
+    <string name="btn_manual">Ввести</string>
+    <string name="manual_title">Строки MRZ</string>
+    <string name="manual_hint">Две строки по 44 символа</string>
+    <string name="ok">Готово</string>
+    <string name="cancel">Отмена</string>
+    <string name="btn_copy">Копировать</string>
+    <string name="btn_share">Поделиться</string>
+    <string name="btn_fix">Исправить MRZ</string>
+    <string name="btn_again">Сканировать ещё</string>
+    <string name="copied">Скопировано</string>
+</resources>

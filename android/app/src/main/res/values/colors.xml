@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="brand">#8E2430</color>
+    <color name="ok">#2E7D32</color>
+    <color name="warn">#E65100</color>
+    <color name="bad">#C62828</color>
+    <color name="launcher_bg">#8E2430</color>
+</resources>
