@@ -62,6 +62,19 @@ jobs:
           "$AAPT2" dump badging "$APK" | grep -E "^package:|sdkVersion|uses-permission|native-code"
           unzip -l "$APK" | grep "assets/tessdata/rus.traineddata"
 
+      # Каким ключом подписан APK: постоянный ключ — обновления ставятся поверх, отладочный — только переустановка.
+      - name: Check signature
+        run: |
+          APK=app/build/outputs/apk/release/app-release.apk
+          APKSIGNER="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/apksigner"
+          CERT=$("$APKSIGNER" verify --print-certs "$APK" | grep -m1 "SHA-256 digest" | awk '{print $NF}')
+          echo "SHA-256 сертификата: $CERT"
+          if [ -n "$SIGNING_KEYSTORE_BASE64" ]; then
+            echo "::notice::APK подписан постоянным ключом (SHA-256 $CERT)"
+          else
+            echo "::warning::APK подписан ОТЛАДОЧНЫМ ключом — секреты SIGNING_* не заданы, обновление поверх установленной версии невозможно"
+          fi
+
       - name: Name APK
         run: cp app/build/outputs/apk/release/app-release.apk "../MyCheckIn-Scanner-${{ github.run_number }}.apk"
 
