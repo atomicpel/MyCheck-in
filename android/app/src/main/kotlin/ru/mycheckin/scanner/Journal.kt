@@ -29,7 +29,8 @@ enum class LogCategory(val label: String) {
     CARD("Карточка"),
     EXPORT("Выгрузка"),
     SETTINGS("Настройки"),
-    HTTP("Обращение к МТС");
+    HTTP("Обращение к МТС"),
+    APP("Приложение");
 
     val isMts: Boolean get() = this in setOf(SYNC, OWNER, SEND, CHECK, HTTP) || this == SETTINGS
 }
@@ -102,7 +103,15 @@ object Journal {
     private val listeners = java.util.concurrent.CopyOnWriteArraySet<() -> Unit>()
     fun addListener(l: () -> Unit) { listeners += l }
     fun removeListener(l: () -> Unit) { listeners -= l }
-    private fun changed() = listeners.forEach { it() }
+    private fun changed() = listeners.forEach { runCatching { it() } }
+
+    /** Журнал никогда не должен ронять приложение: сбой записи — только сообщение в системный лог. */
+    private inline fun <T> safe(default: T, block: () -> T): T = try {
+        block()
+    } catch (e: Exception) {
+        android.util.Log.w("Journal", "Не удалось записать в журнал", e)
+        default
+    }
 
     // ---- Операции ----
 
@@ -150,7 +159,7 @@ object Journal {
         }
     }
 
-    private fun finish(context: Context, op: Op, error: String?) {
+    private fun finish(context: Context, op: Op, error: String?) = safe(Unit) {
         val details = (op.lines + listOfNotNull(error?.let { "Ошибка: $it" })).joinToString("\n")
         val v = ContentValues().apply {
             put("level", op.level.name)
@@ -171,9 +180,9 @@ object Journal {
     }
 
     /** Обращение к МТС: к текущей операции потока или отдельной записью. */
-    fun http(context: Context, e: HttpExchange) {
+    fun http(context: Context, e: HttpExchange) = safe(Unit) {
         val op = current.get()
-        if (op != null) { op.http(e); changed(); return }
+        if (op != null) { op.http(e); changed(); return@safe }
         val id = insertEvent(context, if (e.ok) LogLevel.OK else LogLevel.ERROR, LogCategory.HTTP,
             "${e.method} ${path(e.url)} → ${e.code ?: "нет ответа"}", "", "", "", finished = true)
         insertHttp(context, id, e)
@@ -183,7 +192,7 @@ object Journal {
     private fun insertEvent(
         context: Context, level: LogLevel, category: LogCategory, title: String, details: String,
         msisdn: String, account: String, finished: Boolean = false,
-    ): Long {
+    ): Long = safe(-1L) {
         val now = System.currentTimeMillis()
         val w = db(context).writableDatabase
         val id = w.insert("events", null, ContentValues().apply {
@@ -192,10 +201,11 @@ object Journal {
             put("details", details); put("msisdn", msisdn); put("account", account)
         })
         if (id % 200 == 0L) cleanup(w)
-        return id
+        id
     }
 
-    private fun insertHttp(context: Context, eventId: Long, e: HttpExchange) {
+    private fun insertHttp(context: Context, eventId: Long, e: HttpExchange) = safe(Unit) {
+        if (eventId < 0) return@safe
         db(context).writableDatabase.insert("http", null, ContentValues().apply {
             put("event_id", eventId); put("time", System.currentTimeMillis())
             put("method", e.method); put("url", e.url)

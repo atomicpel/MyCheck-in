@@ -117,13 +117,15 @@ object SimActions {
         Journal.op(context, LogCategory.OWNER, "Данные владельца из МТС", msisdn = sim.msisdn) { op ->
             guarded {
                 val owner = client(context, sim, op).ownerInfo(sim.msisdn)
-                val updated = sim.fillFrom(owner)
+                // Карточку перечитываем: пока шёл запрос, её могли изменить вручную.
+                val fresh = if (sim.id != 0L) SimDb.get(context).byId(sim.id) ?: sim else sim
+                val updated = fresh.fillFrom(owner)
                 op.line("В МТС: " + listOfNotNull(
                     owner.surname?.let { listOfNotNull(owner.surname, owner.name, owner.patronymic).joinToString(" ") } ?: "ФИО нет",
                     if (owner.hasPassport) "паспорт ${owner.series} ${owner.number}" else "паспорта нет",
                 ).joinToString(", "))
                 op.line("Подтверждение на Госуслугах: ${owner.confirmation.description}")
-                val filled = changedFields(sim, updated)
+                val filled = changedFields(fresh, updated)
                 op.line(if (filled.isEmpty()) "В карточке ничего не изменилось" else "Заполнено: " + filled.joinToString())
                 if (sim.id != 0L) SimDb.get(context).save(updated)
                 if (owner.hasName || owner.hasPassport) op.ok("Данные владельца из МТС: ${updated.fullName.ifEmpty { "получены" }}")

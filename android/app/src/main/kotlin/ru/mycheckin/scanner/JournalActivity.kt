@@ -82,7 +82,7 @@ class JournalActivity : AppCompatActivity() {
 
     private val onJournalChanged: () -> Unit = {
         main.removeCallbacks(reloadRunnable)
-        main.postDelayed(reloadRunnable, 300)
+        main.postDelayed(reloadRunnable, 1000)
     }
     private val reloadRunnable = Runnable { reload() }
 
@@ -107,6 +107,8 @@ class JournalActivity : AppCompatActivity() {
 
         list.layoutManager = LinearLayoutManager(this)
         list.adapter = adapter
+        // Записи обновляются на лету (идёт загрузка) — без мигания при изменении.
+        (list.itemAnimator as? androidx.recyclerview.widget.SimpleItemAnimator)?.supportsChangeAnimations = false
         refresh.setColorSchemeColors(MaterialColors.getColor(refresh, com.google.android.material.R.attr.colorPrimary))
         refresh.setOnRefreshListener { reload() }
 
@@ -149,10 +151,13 @@ class JournalActivity : AppCompatActivity() {
     }
 
     private fun reload() {
+        if (io.isShutdown) return
+        val openIds = expanded.toList()   // копия в главном потоке: набор меняется по нажатиям
         io.execute {
-            val entries = Journal.entries(this, msisdn)
-            // Раскрытые записи могли получить новые обмены — перечитываем их.
-            val fresh = expanded.associateWith { Journal.exchanges(this, it) }
+            val loaded = runCatching {
+                Journal.entries(this, msisdn) to openIds.associateWith { Journal.exchanges(this, it) }
+            }.getOrNull() ?: return@execute
+            val (entries, fresh) = loaded
             runOnUiThread {
                 if (isDestroyed) return@runOnUiThread
                 refresh.isRefreshing = false
@@ -275,6 +280,7 @@ class JournalActivity : AppCompatActivity() {
             val exchanges: LinearLayout = v.findViewById(R.id.exchanges)
             val chevron: ImageView = v.findViewById(R.id.chevron)
             var pulse: ObjectAnimator? = null
+            var boundId = 0L
         }
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) =
@@ -305,13 +311,12 @@ class JournalActivity : AppCompatActivity() {
             h.details.text = e.details
             h.details.visibility = if (e.details.isEmpty()) View.GONE else View.VISIBLE
             val open = e.id in expanded
-            h.details.maxLines = if (open) Int.MAX_VALUE else 3
-            h.details.setTextIsSelectable(open)
+            h.boundId = e.id
+            h.chevron.animate().cancel()
             h.chevron.rotation = if (open) 180f else 0f
             h.chevron.visibility = if (e.details.lines().size > 3 || e.exchangeCount > 0 || e.details.length > 160) View.VISIBLE else View.INVISIBLE
-            bindExchanges(h, e, open)
+            applyExpanded(h, e, open)
             h.itemView.setOnClickListener { toggle(h, e) }
-            h.details.setOnClickListener { toggle(h, e) }
 
             if (position > lastAnimated) {
                 lastAnimated = position
@@ -323,27 +328,44 @@ class JournalActivity : AppCompatActivity() {
         }
 
         override fun onViewRecycled(h: VH) {
-            h.pulse?.cancel()
+            h.pulse?.cancel(); h.pulse = null
+            h.boundId = 0L
             h.itemView.animate().cancel(); h.itemView.alpha = 1f; h.itemView.translationY = 0f
         }
 
+        /**
+         * Раскрыть/свернуть запись прямо в карточке. Переходы — только внутри карточки:
+         * анимация всего RecyclerView при живом обновлении списка приводила к падению.
+         */
         private fun toggle(h: VH, e: LogEntry) {
-            TransitionManager.beginDelayedTransition(list, AutoTransition().setDuration(220))
-            if (!expanded.remove(e.id)) {
-                expanded += e.id
-                if (e.exchangeCount > 0 && e.id !in exchangeCache) {
-                    io.execute {
-                        val xs = Journal.exchanges(this@JournalActivity, e.id)
-                        runOnUiThread {
-                            exchangeCache[e.id] = xs
-                            val pos = currentList.indexOfFirst { it.id == e.id }
-                            if (pos >= 0) { TransitionManager.beginDelayedTransition(list, AutoTransition().setDuration(200)); notifyItemChanged(pos) }
+            val open = !expanded.remove(e.id)
+            if (open) expanded += e.id
+            TransitionManager.beginDelayedTransition(h.box, AutoTransition().setDuration(200))
+            applyExpanded(h, e, open)
+            h.chevron.animate().rotation(if (open) 180f else 0f).setDuration(200).start()
+            if (open && e.exchangeCount > 0 && e.id !in exchangeCache) {
+                io.execute {
+                    val xs = runCatching { Journal.exchanges(this@JournalActivity, e.id) }.getOrDefault(emptyList())
+                    runOnUiThread {
+                        if (isDestroyed) return@runOnUiThread
+                        exchangeCache[e.id] = xs
+                        // Карточка могла уйти с экрана или переиспользоваться — обновляем, только если она та же.
+                        val pos = currentList.indexOfFirst { it.id == e.id }
+                        val holder = if (pos >= 0) list.findViewHolderForAdapterPosition(pos) as? VH else null
+                        if (holder != null && holder.boundId == e.id) {
+                            TransitionManager.beginDelayedTransition(holder.box, AutoTransition().setDuration(180))
+                            applyExpanded(holder, e, e.id in expanded)
                         }
                     }
                 }
             }
-            val pos = h.bindingAdapterPosition
-            if (pos != RecyclerView.NO_POSITION) notifyItemChanged(pos)
+        }
+
+        private fun applyExpanded(h: VH, e: LogEntry, open: Boolean) {
+            h.details.maxLines = if (open) Int.MAX_VALUE else 3
+            h.details.setTextIsSelectable(open)
+            if (open) h.details.setOnClickListener(null) else h.details.setOnClickListener { toggle(h, e) }
+            bindExchanges(h, e, open)
         }
 
         private fun bindExchanges(h: VH, e: LogEntry, open: Boolean) {

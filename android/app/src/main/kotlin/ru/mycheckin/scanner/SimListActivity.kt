@@ -87,7 +87,20 @@ class SimListActivity : AppCompatActivity() {
         fab = findViewById(R.id.fab)
 
         contractFilter = savedInstanceState?.getString("contract")
-        io.execute { Journal.markInterruptedOnce(this) }
+        io.execute {
+            Journal.markInterruptedOnce(this)
+            val crash = CrashLog.takePending(this) ?: return@execute
+            Journal.event(this, LogLevel.ERROR, LogCategory.APP, "Приложение аварийно закрылось", crash)
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                MaterialAlertDialogBuilder(this)
+                    .setTitle("Прошлый раз приложение закрылось с ошибкой")
+                    .setMessage(crash.lineSequence().take(5).joinToString("\n") + "\n\nПолный отчёт записан в журнал. Отправьте его разработчику, чтобы исправить причину.")
+                    .setPositiveButton("Открыть журнал") { _, _ -> openJournal() }
+                    .setNegativeButton("Закрыть", null)
+                    .show()
+            }
+        }
 
         list.layoutManager = LinearLayoutManager(this)
         list.adapter = adapter
@@ -220,9 +233,12 @@ class SimListActivity : AppCompatActivity() {
         toolbar.menu.findItem(R.id.action_owners)?.isEnabled = !on
         if (!on) refresh.isRefreshing = false
         if (determinate != null) {
-            progress.isIndeterminate = false
+            if (progress.isIndeterminate) progress.isIndeterminate = false
             progress.setProgressCompat(determinate, true)
         } else if (on && !progress.isIndeterminate) {
+            // Material запрещает включать «бесконечный» режим у видимого индикатора — прячем на время переключения.
+            progress.animate().cancel()
+            progress.visibility = View.INVISIBLE
             progress.isIndeterminate = true
         }
         fade(progress, on)
@@ -309,6 +325,13 @@ class SimListActivity : AppCompatActivity() {
                 } catch (e: SimActions.Failure) {
                     failed++; lastError = e.message
                     if (e.message?.contains("лимит") == true || e.message?.contains("логин") == true) break
+                } catch (e: Exception) {
+                    // Непредвиденная ошибка по одному номеру не должна останавливать загрузку и ронять приложение.
+                    failed++; lastError = "${e.javaClass.simpleName}: ${e.message}"
+                    runCatching {
+                        Journal.event(this, LogLevel.ERROR, LogCategory.OWNER, "Сбой при загрузке данных владельца",
+                            android.util.Log.getStackTraceString(e).take(4000), msisdn = s.msisdn)
+                    }
                 }
                 done = i + 1
                 val d = done
@@ -404,11 +427,16 @@ class SimListActivity : AppCompatActivity() {
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
     private fun fade(v: View, show: Boolean) {
-        if (show && v.visibility != View.VISIBLE) {
-            v.alpha = 0f; v.visibility = View.VISIBLE
+        // Прежняя анимация отменяется (её завершающее действие не выполнится), чтобы
+        // быстро идущие подряд «показать/скрыть» не оставили элемент в неверном состоянии.
+        v.animate().cancel()
+        if (show) {
+            if (v.visibility != View.VISIBLE) { v.alpha = 0f; v.visibility = View.VISIBLE }
             v.animate().alpha(1f).setDuration(200).start()
-        } else if (!show && v.visibility == View.VISIBLE) {
+        } else if (v.visibility == View.VISIBLE) {
             v.animate().alpha(0f).setDuration(150).withEndAction { v.visibility = View.GONE; v.alpha = 1f }.start()
+        } else {
+            v.alpha = 1f
         }
     }
 
