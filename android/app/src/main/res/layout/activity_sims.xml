@@ -36,7 +36,9 @@
             app:boxCornerRadiusTopStart="28dp"
             app:boxStrokeWidth="0dp"
             app:boxStrokeWidthFocused="0dp"
-            app:endIconMode="clear_text"
+            app:endIconContentDescription="Сканировать номер или штрихкод SIM"
+            app:endIconDrawable="@drawable/ic_scan_code"
+            app:endIconMode="custom"
             app:hintEnabled="false"
             app:startIconDrawable="@drawable/ic_search">
 

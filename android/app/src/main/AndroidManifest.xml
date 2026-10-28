@@ -43,6 +43,11 @@
             android:windowSoftInputMode="adjustPan" />
 
         <activity
+            android:name=".CodeScanActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Scanner.Camera" />
+
+        <activity
             android:name=".SettingsActivity"
             android:exported="false"
             android:windowSoftInputMode="adjustResize" />

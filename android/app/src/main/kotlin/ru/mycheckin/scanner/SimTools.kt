@@ -72,7 +72,9 @@ object SimSearch {
             when {
                 d.length == w.count { it.isLetterOrDigit() } && d.isNotEmpty() -> {
                     val alt = if (d.length == 11 && d[0] == '8') "7" + d.drop(1) else d
-                    digits.any { it.contains(d) || it.contains(alt) }
+                    // ICCID со сканера может быть с контрольной цифрой или без неё.
+                    digits.any { it.contains(d) || it.contains(alt) } ||
+                        (d.length >= 19 && ru.mycheckin.passport.sim.SimCodes.sameIccid(s.iccid, d))
                 }
                 else -> text.contains(w)
             }

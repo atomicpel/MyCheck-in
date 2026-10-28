@@ -72,12 +72,51 @@ class SimListActivity : AppCompatActivity() {
     private var contractFilter: String? = null
     private var busy = false
     private val cancelBulk = AtomicBoolean(false)
+    private lateinit var searchLayout: com.google.android.material.textfield.TextInputLayout
+
+    /** Сканер кода SIM: найденная карточка открывается сразу, иначе значение подставляется в поиск. */
+    private val scanCode = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) { r ->
+        if (r.resultCode != RESULT_OK) return@registerForActivityResult
+        val data = r.data ?: return@registerForActivityResult
+        val value = data.getStringExtra(CodeScanActivity.RESULT_VALUE).orEmpty()
+        val simId = data.getLongExtra(CodeScanActivity.RESULT_SIM_ID, 0L)
+        search.setText(value)
+        search.setSelection(search.text?.length ?: 0)
+        if (simId != 0L) openScreen(Intent(this, SimEditActivity::class.java).putExtra(SimEditActivity.EXTRA_ID, simId))
+        else Snackbar.make(list, "SIM с кодом $value нет в списке", Snackbar.LENGTH_LONG).setAnchorView(fab)
+            .setAction("Добавить") {
+                val kind = data.getStringExtra(CodeScanActivity.RESULT_KIND)
+                openScreen(Intent(this, SimEditActivity::class.java)
+                    .putExtra(SimEditActivity.EXTRA_CONTRACT, contractFilter)
+                    .putExtra(if (kind == "PHONE") SimEditActivity.EXTRA_PHONE else SimEditActivity.EXTRA_ICCID, value))
+            }.show()
+    }
+
+    private fun updateSearchIcon() {
+        val empty = search.text.isNullOrEmpty()
+        val mode = if (empty) com.google.android.material.textfield.TextInputLayout.END_ICON_CUSTOM
+        else com.google.android.material.textfield.TextInputLayout.END_ICON_CLEAR_TEXT
+        if (searchLayout.endIconMode == mode) return
+        searchLayout.endIconMode = mode
+        if (empty) {
+            searchLayout.setEndIconDrawable(R.drawable.ic_scan_code)
+            searchLayout.endIconContentDescription = "Сканировать номер или штрихкод SIM"
+            searchLayout.setEndIconOnClickListener { openScanner() }
+        }
+    }
+
+    private fun openScanner() {
+        scanCode.launch(Intent(this, CodeScanActivity::class.java).putExtra(CodeScanActivity.EXTRA_TARGET, CodeScanActivity.TARGET_ANY))
+        @Suppress("DEPRECATION") overridePendingTransition(R.anim.slide_in_right, R.anim.slide_out_left)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_sims)
         toolbar = findViewById(R.id.toolbar)
         search = findViewById(R.id.search)
+        searchLayout = findViewById(R.id.search_layout)
+        searchLayout.setEndIconOnClickListener { openScanner() }
         chips = findViewById(R.id.contracts)
         progress = findViewById(R.id.sync_progress)
         progressText = findViewById(R.id.sync_text)
@@ -118,6 +157,7 @@ class SimListActivity : AppCompatActivity() {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
             override fun afterTextChanged(s: Editable?) {
+                updateSearchIcon()
                 main.removeCallbacks(applyFilter)
                 main.postDelayed(applyFilter, 140)
             }

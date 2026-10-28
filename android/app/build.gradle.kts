@@ -75,6 +75,7 @@ dependencies {
     // Распознавание на устройстве, модели встроены в APK (работает без интернета).
     implementation("com.google.mlkit:text-recognition:16.0.1")     // MRZ, цифры, даты
     implementation("com.google.mlkit:face-detection:16.1.7")       // фото владельца
+    implementation("com.google.mlkit:barcode-scanning:17.3.0")     // штрихкод SIM (ICCID), модель в APK
     implementation("cz.adaptech.tesseract4android:tesseract4android:4.7.0")  // кириллица
 
     // Зашифрованное хранение ключей МТС API

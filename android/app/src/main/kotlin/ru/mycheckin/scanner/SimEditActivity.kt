@@ -49,6 +49,9 @@ class SimEditActivity : AppCompatActivity() {
     companion object {
         const val EXTRA_ID = "sim_id"
         const val EXTRA_CONTRACT = "contract"
+        /** Новая карточка с уже известным номером или ICCID (например, после сканирования в поиске). */
+        const val EXTRA_PHONE = "phone"
+        const val EXTRA_ICCID = "iccid"
         private val RU = DateTimeFormatter.ofPattern("dd.MM.uuuu").withResolverStyle(ResolverStyle.STRICT)
     }
 
@@ -107,6 +110,30 @@ class SimEditActivity : AppCompatActivity() {
         if (r.resultCode == RESULT_OK) applyScan()
     }
 
+    /** Сканер кода SIM для полей «Номер телефона» и «ICCID». */
+    private val scanField = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
+        val data = r.data ?: return@registerForActivityResult
+        if (r.resultCode != RESULT_OK) return@registerForActivityResult
+        val value = data.getStringExtra(CodeScanActivity.RESULT_VALUE).orEmpty()
+        val field = if (data.getStringExtra(CodeScanActivity.RESULT_KIND) == "PHONE") phone else iccid
+        field.setText(if (field === phone) SimFormat.phone(value) else value)
+        flash(field)
+        val other = data.getLongExtra(CodeScanActivity.RESULT_SIM_ID, 0L)
+        if (other != 0L && other != sim.id) Snackbar.make(scroll, "Эта SIM уже есть в списке", Snackbar.LENGTH_LONG)
+            .setAnchorView(R.id.bottom_bar)
+            .setAction("Открыть") { openScreen(Intent(this, SimEditActivity::class.java).putExtra(EXTRA_ID, other)) }.show()
+    }
+
+    private fun setupFieldScanner(layoutId: Int, target: String) {
+        val l = layout(layoutId)
+        l.endIconMode = TextInputLayout.END_ICON_CUSTOM
+        l.setEndIconDrawable(R.drawable.ic_scan_code)
+        l.endIconContentDescription = "Сканировать"
+        l.setEndIconOnClickListener {
+            scanField.launch(Intent(this, CodeScanActivity::class.java).putExtra(CodeScanActivity.EXTRA_TARGET, target))
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_sim_edit)
@@ -142,6 +169,8 @@ class SimEditActivity : AppCompatActivity() {
             override fun handleOnBackPressed() = leave()
         })
 
+        setupFieldScanner(R.id.phone_layout, CodeScanActivity.TARGET_PHONE)
+        setupFieldScanner(R.id.iccid_layout, CodeScanActivity.TARGET_ICCID)
         DateMask.attach(birthDate); DateMask.attach(issueDate)
         DivisionMask.attach(divisionCode)
         layout(R.id.birth_date_layout).setEndIconOnClickListener { pickDate(birthDate, "Дата рождения") }
@@ -167,7 +196,11 @@ class SimEditActivity : AppCompatActivity() {
             runOnUiThread {
                 if (isDestroyed) return@runOnUiThread
                 setupContracts(contracts)
-                val r = record ?: SimRecord(msisdn = "", contractId = preContract.orEmpty())
+                val r = record ?: SimRecord(
+                    msisdn = intent.getStringExtra(EXTRA_PHONE).orEmpty(),
+                    iccid = intent.getStringExtra(EXTRA_ICCID).orEmpty(),
+                    contractId = preContract.orEmpty(),
+                )
                 saved = record
                 sim = r
                 bind(r)
@@ -376,7 +409,11 @@ class SimEditActivity : AppCompatActivity() {
 
     private fun isDirty(): Boolean {
         val now = collect()
-        val base = saved ?: SimRecord(msisdn = "", contractId = intent.getStringExtra(EXTRA_CONTRACT).orEmpty())
+        val base = saved ?: SimRecord(
+            msisdn = intent.getStringExtra(EXTRA_PHONE).orEmpty(),
+            iccid = intent.getStringExtra(EXTRA_ICCID).orEmpty(),
+            contractId = intent.getStringExtra(EXTRA_CONTRACT).orEmpty(),
+        )
         return now.copy(updatedAt = 0) != base.copy(updatedAt = 0) && !(saved == null && now.msisdn.isEmpty() && now.fullName.isEmpty() && now.iccid.isEmpty())
     }
 
