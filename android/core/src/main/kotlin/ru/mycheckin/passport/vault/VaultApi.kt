@@ -140,6 +140,11 @@ class VaultApi(baseUrl: String, private val http: BinHttp = UrlConnectionBinHttp
         if (e.code == 404) PutResult.Ok(0) else throw e
     }
 
+    /** Отозвать доверенное устройство (при отключении телефона). */
+    fun revokeDevice(id: String) {
+        try { call("DELETE", "/devices/${checkId(id)}", null) } catch (e: VaultException) { if (e.code != 404) throw e }
+    }
+
     fun putBlob(id: String, sealed: ByteArray) { call("PUT", "/blobs/${checkId(id)}", sealed, contentType = "application/octet-stream") }
 
     fun getBlob(id: String): ByteArray = call("GET", "/blobs/${checkId(id)}", null).body

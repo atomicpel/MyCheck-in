@@ -145,6 +145,8 @@ function lock(message) {
   S.token = null; S.vaultKey = null; S.records = new Map(); S.rev = 0;
   clearTimeout(S.idleTimer); clearInterval(S.poll);
   document.querySelectorAll('.drawer, .scrim, .modal, .lightbox').forEach((x) => x.remove());
+  // Расшифрованные фото паспортов — стереть из памяти вкладки.
+  blobUrls.splice(0).forEach((u) => URL.revokeObjectURL(u));
   if (tok) fetch('/api/v1/logout', { method: 'POST', headers: { Authorization: 'Bearer ' + tok }, credentials: 'omit' }).catch(() => {});
   showLogin(message);
 }
@@ -629,8 +631,8 @@ function openCard(id) {
 
   if (del) del.onclick = () => confirmBox('Удалить карточку?', 'Карточка исчезнет и на телефоне после синхронизации. В МТС ничего не изменится.', 'Удалить', async () => {
     try {
-      await api('DELETE', `/records/${recId}?baseRev=${rec.rev}`);
-      S.records.delete(recId);
+      // Удаление — зашифрованная отметка {t:"deleted"}: сервер не может подделать её и стереть карточки на телефоне.
+      if (!(await saveRecord(recId, { t: 'deleted' }))) return;
       [o.passportPhoto, o.facePhoto].filter(Boolean).forEach((b) => api('DELETE', '/blobs/' + b).catch(() => {}));
       toast('Карточка удалена'); render(); close();
     } catch (e) { toast(e.message, true); }
@@ -733,7 +735,8 @@ function exportCsv() {
   if (!list.length) return toast('Нечего выгружать');
   const head = ['Контракт', 'Номер контракта', 'Лицевой счёт', 'Телефон', 'ICCID', 'Фамилия', 'Имя', 'Отчество', 'Пол', 'Дата рождения', 'Место рождения',
     'Серия', 'Номер', 'Дата выдачи', 'Код подразделения', 'Кем выдан', 'Статус', 'Номер заявки', 'Примечание'];
-  const q = (v) => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+  // Значения, начинающиеся с = + - @, Excel считает формулами — экранируем апострофом.
+  const q = (v) => { let t = String(v ?? ''); if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; return '"' + t.replace(/"/g, '""') + '"'; };
   const rows = list.map((o) => [contractTitle(o.contractId, cs), o.contractId, o.accountNo, o.msisdn, o.iccid, o.surname, o.name, o.patronymic,
     o.sex === 'M' ? 'М' : o.sex === 'F' ? 'Ж' : '', isoToRu(o.birthDate), o.birthPlace, o.series, o.number, isoToRu(o.issueDate), o.divisionCode, o.issuedBy,
     ST[status(o)][0], o.messageId, o.notes]);

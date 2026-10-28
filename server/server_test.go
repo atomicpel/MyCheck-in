@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -311,5 +313,61 @@ func TestClientIPOnlyFromLocalProxy(t *testing.T) {
 	r.RemoteAddr = "9.9.9.9:5555" // не через Caddy — заголовку не верим
 	if ip := e.srv.clientIP(r); ip != "9.9.9.9" {
 		t.Fatal(ip)
+	}
+}
+
+// Параллельный подбор: запросы с отложенным телом не должны обходить лимит попыток.
+func TestParallelBruteForceLimited(t *testing.T) {
+	e := newEnv(t)
+	e.initVault()
+	ts := httptest.NewServer(e.h)
+	defer ts.Close()
+	const n = 100
+	writers := make([]*io.PipeWriter, n)
+	codes := make(chan int, n)
+	for i := 0; i < n; i++ {
+		pr, pw := io.Pipe()
+		writers[i] = pw
+		go func() {
+			req, _ := http.NewRequest("POST", ts.URL+"/api/v1/login", pr)
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				codes <- 0
+				return
+			}
+			resp.Body.Close()
+			codes <- resp.StatusCode
+		}()
+	}
+	time.Sleep(300 * time.Millisecond) // все запросы уже прошли заголовки и ждут тело
+	body, _ := json.Marshal(map[string]any{"authKey": b64(e.auth), "totp": "000000"})
+	for _, w := range writers {
+		go func(w *io.PipeWriter) { w.Write(body); w.Close() }(w)
+	}
+	checked := 0
+	for i := 0; i < n; i++ {
+		if c := <-codes; c == 401 {
+			checked++
+		}
+	}
+	if checked > ipMaxFails {
+		t.Fatalf("проверено %d попыток вместо не более %d", checked, ipMaxFails)
+	}
+}
+
+// Общая блокировка входа по паролю не выключает доверенные устройства.
+func TestGlobalLockDoesNotStopDevices(t *testing.T) {
+	e := newEnv(t)
+	e.initVault()
+	dev := e.login(true)["deviceToken"].(string)
+	for i := 0; i < globalMax; i++ {
+		e.srv.limiter.Fail(fmt.Sprintf("10.0.0.%d", i))
+	}
+	if w := e.do("POST", "/api/v1/login", "", map[string]any{"authKey": b64(e.auth), "totp": e.code()}); w.Code != 429 {
+		t.Fatal("ожидалась общая блокировка", w.Code)
+	}
+	if w := e.do("POST", "/api/v1/device-login", "", map[string]any{"deviceToken": dev}); w.Code != 200 {
+		t.Fatal("доверенное устройство заблокировано", w.Code, w.Body)
 	}
 }

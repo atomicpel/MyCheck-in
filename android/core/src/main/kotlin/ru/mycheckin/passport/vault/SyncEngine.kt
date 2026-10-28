@@ -18,7 +18,8 @@ interface BlobIo {
 interface SyncStore {
     var cursor: Long
     /**
-     * Запись с сервера. [json] == null — удалена на сервере.
+     * Запись с сервера. [json] == null — сервер сообщил об удалении без подписи (так делать не должен —
+     * возможна подмена): store не стирает данные, а отправляет их заново. Настоящее удаление — json `{"t":"deleted"}`.
      * Если на телефоне есть более свежая неотправленная правка, store оставляет её и запоминает [rev],
      * чтобы следующая отправка прошла поверх.
      */
@@ -40,6 +41,10 @@ data class SyncReport(
 
 /** Синхронизация: сначала получить изменения, потом отправить свои. Всё шифруется ключом хранилища. */
 class SyncEngine(private val api: VaultApi, private val vaultKey: ByteArray, private val store: SyncStore) {
+    companion object {
+        /** Подписанная ключом хранилища отметка об удалении. */
+        const val DELETED = "{\"t\":\"deleted\"}"
+    }
 
     val blobs = object : BlobIo {
         override fun upload(bytes: ByteArray): String {
@@ -95,7 +100,10 @@ class SyncEngine(private val api: VaultApi, private val vaultKey: ByteArray, pri
         for (p in store.pending(blobs)) {
             if (p.json == null) {
                 if (p.remoteId.isEmpty()) { store.deletePushed(p); continue }
-                when (val r = api.deleteRecord(p.remoteId, p.remoteRev)) {
+                // Удаление — это тоже зашифрованная запись {"t":"deleted"}: сервер не может подделать её
+                // и тем самым заставить телефон стереть карточку.
+                val marker = VaultCrypto.encryptRecord(vaultKey, p.remoteId, DELETED)
+                when (val r = api.putRecord(p.remoteId, p.remoteRev, marker)) {
                     is PutResult.Ok -> { store.deletePushed(p); deleted++ }
                     is PutResult.Conflict -> { c++; conflicts++; r.current?.let(::apply) }
                 }

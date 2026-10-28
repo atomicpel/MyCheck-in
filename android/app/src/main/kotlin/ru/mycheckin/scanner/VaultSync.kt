@@ -105,10 +105,12 @@ object VaultSync {
         val p = securePrefs(context)
         val token = p.getString(DEVICE_TOKEN, null)
         val url = p.getString(URL, null)
+        val deviceId = p.getString(DEVICE_ID, null)
         p.edit().remove(DEVICE_TOKEN).remove(DEVICE_ID).remove(VAULT_KEY).remove(CURSOR).remove(LAST_ERROR).commit()
         executor.execute {
+            // Отзываем устройство на сервере: токен этого телефона перестаёт действовать.
             if (token != null && url != null) runCatching {
-                VaultApi(url).apply { deviceToken = token; deviceLogin(); logout() }
+                VaultApi(url).apply { deviceToken = token; deviceLogin(); deviceId?.let(::revokeDevice); logout() }
             }
         }
         Journal.event(context, LogLevel.WARN, LogCategory.VAULT, "Телефон отключён от сервера", "Ключ хранилища удалён с телефона")
@@ -198,13 +200,22 @@ object VaultSync {
             set(v) { p.edit().putLong(CURSOR, v).apply() }
 
         override fun applyRemote(id: String, rev: Long, json: String?, blobs: BlobIo): ApplyResult {
-            if (json == null) return applyDelete(id, rev)
+            if (json == null) return relink(id)
             val o = Json.parse(json)
             return when (o.field("t").str()) {
+                "deleted" -> applyDelete(id, rev)
                 "sim" -> applySim(id, rev, o, blobs)
                 "contract" -> applyContract(id, rev, o)
                 else -> ApplyResult.SKIPPED // служебные записи веб-версии
             }
+        }
+
+        /** Неподписанное удаление от сервера: данные не стираем, а отправим заново под новым id. */
+        private fun relink(id: String): ApplyResult {
+            val v = ContentValues().apply { put("remote_id", ""); put("remote_rev", 0); put("dirty", 1) }
+            val n = db.update("sims", ContentValues(v).apply { put("passport_blob", ""); put("face_blob", "") }, "remote_id = ?", arrayOf(id)) +
+                db.update("contracts", v, "remote_id = ?", arrayOf(id))
+            return if (n > 0) ApplyResult.KEPT_LOCAL else ApplyResult.SKIPPED
         }
 
         private fun applyDelete(id: String, rev: Long): ApplyResult {
@@ -221,6 +232,7 @@ object VaultSync {
             }
             // Контракт оставляем на телефоне (к нему привязаны SIM), только разрываем связь.
             val n = db.update("contracts", ContentValues().apply { put("remote_id", ""); put("remote_rev", 0); put("dirty", 0) }, "remote_id = ?", arrayOf(id))
+            db.delete("vault_deletes", "remote_id = ?", arrayOf(id))
             return if (n > 0) ApplyResult.APPLIED else ApplyResult.SKIPPED
         }
 
@@ -259,9 +271,21 @@ object VaultSync {
                 put("updated_at", remoteUpdated)
                 put("remote_id", id); put("remote_rev", rev); put("dirty", 0)
             }
-            // Фото: скачиваем и расшифровываем, только если сменилось.
-            photo(v, pBlob, row?.get(5).orEmpty(), row?.get(7).orEmpty(), "passport", blobs)
-            photo(v, fBlob, row?.get(6).orEmpty(), row?.get(8).orEmpty(), "face", blobs)
+            // Фото: скачиваем и расшифровываем, только если сменилось. Новое фото с телефона, ещё не отправленное,
+            // не затираем: оставляем его и отправим карточку заново уже с ним.
+            var keepLocal = false
+            for ((kind, remoteBlob, idx) in listOf(Triple("passport", pBlob, 5), Triple("face", fBlob, 6))) {
+                val localBlob = row?.get(idx).orEmpty(); val localPath = row?.get(idx + 2).orEmpty()
+                if (row != null && row[3] == "1" && localBlob.isEmpty() && localPath.isNotEmpty() && remoteBlob != localBlob) {
+                    v.put("${kind}_photo", localPath); v.put("${kind}_blob", "")
+                    keepLocal = true
+                } else {
+                    photo(v, remoteBlob, localBlob, localPath, kind, blobs)
+                    // Фото снова используется — не удалять его с сервера.
+                    if (remoteBlob.isNotEmpty()) db.delete("vault_deletes", "remote_id = ? AND kind = 'blob'", arrayOf(remoteBlob))
+                }
+            }
+            if (keepLocal) { v.put("dirty", 1); v.put("updated_at", remoteUpdated + 1) }
             if (row == null) {
                 db.insertOrThrow("sims", null, v)
                 // Удалили на телефоне, а в веб-версии запись изменили — правка важнее удаления.
@@ -278,7 +302,14 @@ object VaultSync {
                 v.put("${col}_photo", ""); v.put("${col}_blob", "")
                 return
             }
-            val bytes = blobs.download(blob)
+            val bytes = try {
+                blobs.download(blob)
+            } catch (e: VaultException) {
+                if (e.code != 404) throw e
+                // Фото на сервере нет — карточку принимаем без него, синхронизацию не останавливаем.
+                v.put("${col}_photo", ""); v.put("${col}_blob", blob)
+                return
+            }
             v.put("${col}_photo", SimPhotos.saveBytes(context, bytes, kind))
             v.put("${col}_blob", blob)
             SimPhotos.delete(oldPath)

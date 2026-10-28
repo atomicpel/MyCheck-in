@@ -120,7 +120,8 @@ object SimExport {
             "Дата рождения", "Место рождения", "Серия", "Номер", "Дата выдачи", "Код подразделения", "Кем выдан",
             "Статус", "Номер заявки", "Есть в МТС", "Примечание",
         )
-        fun q(v: String) = "\"" + v.replace("\"", "\"\"") + "\""
+        // Значения, начинающиеся с = + - @, Excel считает формулами — экранируем апострофом.
+        fun q(v: String) = "\"" + (if (v.isNotEmpty() && v[0] in "=+-@\t\r") "'$v" else v).replace("\"", "\"\"") + "\""
         val rows = sims.map { s ->
             listOf(
                 contracts[s.contractId]?.title.orEmpty(), s.contractId, s.accountNo, s.msisdn, s.iccid,

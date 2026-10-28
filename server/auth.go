@@ -228,6 +228,26 @@ func (l *Limiter) Allowed(ip string) (bool, time.Duration) {
 	return true, 0
 }
 
+// AllowedIP — как Allowed, но без общей блокировки (для входа доверенных устройств).
+func (l *Limiter) AllowedIP(ip string) (bool, time.Duration) {
+	now := l.now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.perIP[ip] = prune(l.perIP[ip], now.Add(-ipWindow))
+	if f := l.perIP[ip]; len(f) >= ipMaxFails {
+		return false, f[0].Add(ipWindow).Sub(now)
+	}
+	return true, 0
+}
+
+// FailIP — неудачная попытка, которая учитывается только для адреса (не включает общую блокировку).
+func (l *Limiter) FailIP(ip string) {
+	now := l.now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.perIP[ip] = append(prune(l.perIP[ip], now.Add(-ipWindow)), now)
+}
+
 // Fail — неудачная попытка; возвращает true, если включилась общая блокировка.
 func (l *Limiter) Fail(ip string) bool {
 	now := l.now()
@@ -272,6 +292,10 @@ func (a *Audit) Log(event, ip, device, detail string, ok bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if info, err := os.Stat(a.path); err == nil && info.Size() > auditMaxBytes {
+		// Храним 5 прежних файлов (до ~30 МБ истории).
+		for i := 4; i >= 1; i-- {
+			_ = os.Rename(fmt.Sprintf("%s.%d", a.path, i), fmt.Sprintf("%s.%d", a.path, i+1))
+		}
 		_ = os.Rename(a.path, a.path+".1")
 	}
 	f, err := os.OpenFile(a.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)

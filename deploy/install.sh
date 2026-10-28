@@ -19,7 +19,8 @@ ok()   { printf '\033[1;32m✓\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 
 [ "$(id -u)" = 0 ] || die "Запустите от root: sudo bash install.sh"
-[ "$RELEASE" != "__RELEASE__" ] || die "Укажите выпуск: RELEASE=server-N bash install.sh (или скачайте install.sh со страницы выпуска)"
+case "$RELEASE" in server-[0-9]*) ;; *) die "Укажите выпуск: RELEASE=server-N bash install.sh (или скачайте install.sh со страницы выпуска)" ;; esac
+[[ "$DOMAIN" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]] || die "Неверное доменное имя: $DOMAIN"
 command -v systemctl >/dev/null || die "Нужен systemd"
 command -v curl >/dev/null || die "Нужен curl"
 command -v caddy >/dev/null || die "Caddy не найден. Скрипт рассчитан на Caddy, установленный как системная служба"
@@ -40,7 +41,7 @@ for f in "simvault-linux-$ARCH" SHA256SUMS simvault.service Caddyfile.snippet ba
   curl -fsSL --proto '=https' --tlsv1.2 -o "$TMP/$f" "$BASE/$f" || die "Не удалось скачать $f"
 done
 ( cd "$TMP" && grep -E " (simvault-linux-$ARCH|simvault.service|Caddyfile.snippet|backup.sh)\$" SHA256SUMS | sha256sum -c --quiet - ) \
-  || die "Контрольная сумма не совпала — файлы повреждены или подменены. Установка остановлена"
+  || die "Контрольная сумма не совпала — файлы скачались с ошибкой. Установка остановлена"
 ok "Контрольные суммы сходятся"
 
 # ---- 2. Пользователь и папки ----
@@ -63,7 +64,8 @@ FIRST=0
 if [ ! -f "$DATA/config.json" ]; then
   FIRST=1
   PORT=8743
-  while ss -ltnH "( sport = :$PORT )" | grep -q .; do
+  # Порт занят, если на нём кто-то отвечает (другие сайты на этом сервере не трогаем).
+  while (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null; do
     PORT=$((PORT + 1))
     [ "$PORT" -lt 8800 ] || die "Не нашёл свободный порт 8743–8799"
   done
@@ -103,7 +105,8 @@ curl -fsS "http://127.0.0.1:$PORT/api/v1/status" >/dev/null || die "Сервер
 ok "Служба simvault работает на 127.0.0.1:$PORT (наружу не открыта)"
 
 # ---- 5. Caddy ----
-if grep -qF "$DOMAIN" "$CADDYFILE"; then
+# Сайт уже есть, если домен стоит в начале строки адреса сайта (не в комментарии и не частью другого имени).
+if grep -qE "^[[:space:]]*(https?://)?${DOMAIN//./\\.}(:[0-9]+)?[[:space:]]*(,|\{|$)" "$CADDYFILE"; then
   ok "Caddy: сайт $DOMAIN уже настроен — не трогаю"
 else
   BK="$CADDYFILE.bak-simvault-$(date +%Y%m%d%H%M%S)"

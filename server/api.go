@@ -32,7 +32,10 @@ type Server struct {
 	limiter  *Limiter
 	audit    *Audit
 	devMu    sync.Mutex
-	now      func() time.Time
+	// authMu — попытки входа проверяются строго по одной: иначе сотни параллельных запросов
+	// прошли бы проверку лимита раньше, чем первая ошибка будет учтена.
+	authMu sync.Mutex
+	now    func() time.Time
 }
 
 func NewServer(cfg *Config, dataDir string, now func() time.Time) (*Server, error) {
@@ -227,10 +230,6 @@ func validWrapped(s string) bool {
 
 func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 	ip := s.clientIP(r)
-	if ok, wait := s.limiter.Allowed(ip); !ok {
-		jsonError(w, http.StatusTooManyRequests, "Слишком много попыток. Подождите "+wait.Round(time.Minute).String())
-		return
-	}
 	var req struct {
 		SetupToken string `json:"setupToken"`
 		KDF        KDF    `json:"kdf"`
@@ -238,6 +237,12 @@ func (s *Server) setup(w http.ResponseWriter, r *http.Request) {
 		WrappedKey string `json:"wrappedKey"`
 	}
 	if !readBody(w, r, 4096, &req) {
+		return
+	}
+	s.authMu.Lock()
+	defer s.authMu.Unlock()
+	if ok, wait := s.limiter.Allowed(ip); !ok {
+		jsonError(w, http.StatusTooManyRequests, "Слишком много попыток. Подождите "+waitText(wait))
 		return
 	}
 	if v, _ := s.store.Vault(); v != nil || s.cfg.SetupTokenHash == "" {
@@ -275,11 +280,6 @@ func (s *Server) prelogin(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	ip := s.clientIP(r)
-	if ok, wait := s.limiter.Allowed(ip); !ok {
-		s.audit.Log("login", ip, "", "заблокировано (подбор)", false)
-		jsonError(w, http.StatusTooManyRequests, "Слишком много попыток. Подождите "+wait.Round(time.Minute).String())
-		return
-	}
 	var req struct {
 		AuthKey     string `json:"authKey"`
 		TOTP        string `json:"totp"`
@@ -287,6 +287,13 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		DeviceName  string `json:"deviceName"`
 	}
 	if !readBody(w, r, 2048, &req) {
+		return
+	}
+	s.authMu.Lock()
+	defer s.authMu.Unlock()
+	if ok, wait := s.limiter.Allowed(ip); !ok {
+		// Каждый отклонённый запрос в журнал не пишем: иначе им можно «замусорить» журнал и вытеснить следы.
+		jsonError(w, http.StatusTooManyRequests, "Слишком много попыток. Подождите "+waitText(wait))
 		return
 	}
 	v, err := s.store.Vault()
@@ -353,14 +360,18 @@ func cleanName(n string) string {
 // deviceLogin — вход доверенного устройства по его токену (без пароля и кода).
 func (s *Server) deviceLogin(w http.ResponseWriter, r *http.Request) {
 	ip := s.clientIP(r)
-	if ok, wait := s.limiter.Allowed(ip); !ok {
-		jsonError(w, http.StatusTooManyRequests, "Слишком много попыток. Подождите "+wait.Round(time.Minute).String())
-		return
-	}
 	var req struct {
 		DeviceToken string `json:"deviceToken"`
 	}
 	if !readBody(w, r, 1024, &req) {
+		return
+	}
+	s.authMu.Lock()
+	defer s.authMu.Unlock()
+	// Общая блокировка (подбор пароля) доверенные устройства не останавливает: их токен 256 бит, подобрать нельзя,
+	// а иначе любой мог бы ежечасными ошибками выключить синхронизацию телефона.
+	if ok, wait := s.limiter.AllowedIP(ip); !ok {
+		jsonError(w, http.StatusTooManyRequests, "Слишком много попыток. Подождите "+waitText(wait))
 		return
 	}
 	h := sha256hex(req.DeviceToken)
@@ -375,7 +386,7 @@ func (s *Server) deviceLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if dev == nil || now.After(dev.ExpiresAt) {
 		s.devMu.Unlock()
-		s.limiter.Fail(ip)
+		s.limiter.FailIP(ip)
 		s.audit.Log("device-login", ip, "", "неизвестное или просроченное устройство", false)
 		jsonError(w, http.StatusUnauthorized, "Устройство не доверено или срок истёк — войдите с паролем")
 		return
@@ -405,6 +416,12 @@ func (s *Server) changePassword(w http.ResponseWriter, r *http.Request, ses *Ses
 		WrappedKey string `json:"wrappedKey"`
 	}
 	if !readBody(w, r, 4096, &req) {
+		return
+	}
+	s.authMu.Lock()
+	defer s.authMu.Unlock()
+	if ok, wait := s.limiter.Allowed(ip); !ok {
+		jsonError(w, http.StatusTooManyRequests, "Слишком много попыток. Подождите "+waitText(wait))
 		return
 	}
 	v, _ := s.store.Vault()
@@ -614,4 +631,12 @@ func (s *Server) revokeDevice(w http.ResponseWriter, r *http.Request, ses *Sessi
 	s.sessions.DropDevice(id)
 	s.audit.Log("revoke-device", s.clientIP(r), ses.Name, "отозвано устройство «"+name+"»", true)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func waitText(d time.Duration) string {
+	m := int(d.Round(time.Minute) / time.Minute)
+	if m < 1 {
+		m = 1
+	}
+	return strconv.Itoa(m) + " мин"
 }
