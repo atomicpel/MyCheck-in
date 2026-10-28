@@ -638,7 +638,7 @@ object DateMask {
         override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
         override fun afterTextChanged(s: Editable) {
             if (self) return
-            val d = s.filter { it.isDigit() }.take(8)
+            val d = s.filter { it.isDigit() }.toString().take(8)
             val f = buildString {
                 d.forEachIndexed { i, c -> if (i == 2 || i == 4) append('.'); append(c) }
             }
@@ -657,7 +657,7 @@ object DivisionMask {
         override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
         override fun afterTextChanged(s: Editable) {
             if (self) return
-            val d = s.filter { it.isDigit() }.take(6)
+            val d = s.filter { it.isDigit() }.toString().take(6)
             val f = if (d.length > 3) d.take(3) + "-" + d.drop(3) else d.toString()
             if (f != s.toString()) { self = true; s.replace(0, s.length, f); self = false }
         }
