@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+    <item
+        android:id="@+id/action_sync"
+        android:icon="@drawable/ic_sync"
+        android:title="Загрузить из МТС"
+        app:showAsAction="ifRoom" />
+    <item
+        android:id="@+id/action_export"
+        android:icon="@drawable/ic_upload"
+        android:title="Выгрузить в Excel"
+        app:showAsAction="ifRoom" />
+    <item
+        android:id="@+id/action_owners"
+        android:title="Загрузить ФИО и паспорта из МТС"
+        app:showAsAction="never" />
+    <item
+        android:id="@+id/action_contracts"
+        android:title="Названия контрактов"
+        app:showAsAction="never" />
+    <item
+        android:id="@+id/action_settings"
+        android:title="Настройки МТС API"
+        app:showAsAction="never" />
+</menu>

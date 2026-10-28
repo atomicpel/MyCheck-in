@@ -172,11 +172,56 @@ class MtsClient(
         return PersonalDataApi.parseResult(r.body, msisdn)
     }
 
-    /** Статус подтверждения данных на номере через Госуслуги. */
-    fun confirmationStatus(phone: String): ConfirmationStatus {
+    /** Данные владельца, внесённые в МТС, и статус их подтверждения через Госуслуги. */
+    fun ownerInfo(phone: String): OwnerInfo {
         val msisdn = PersonalDataApi.normalizeMsisdn(phone) ?: throw IllegalArgumentException("Неверный номер телефона")
         val q = URLEncoder.encode(msisdn, "UTF-8")
         val r = api("GET", url(PersonalDataApi.INFO_PATH) + "?contactMedium.phoneNumber=$q", emptyMap(), null)
-        return PersonalDataApi.parseConfirmation(r.body)
+        return OwnerInfo.parse(r.body)
+    }
+
+    /** Статус подтверждения данных на номере через Госуслуги. */
+    fun confirmationStatus(phone: String): ConfirmationStatus = ownerInfo(phone).confirmation
+
+    /** Одна страница структуры абонента: всё, по контракту или с постраничной выдачей. */
+    fun hierarchy(contract: String? = null, pageNum: Int? = null, pageSize: Int? = null): HierarchyPage {
+        val q = buildList {
+            contract?.let { add("contract=" + URLEncoder.encode(it, "UTF-8")) }
+            pageNum?.let { add("pageNum=$it") }
+            pageSize?.let { add("pageSize=$it") }
+        }
+        val r = api("GET", url(Hierarchy.PATH) + if (q.isEmpty()) "" else "?" + q.joinToString("&"), emptyMap(), null)
+        return Hierarchy.parse(r.body)
+    }
+
+    /**
+     * Все контракты и номера. Сначала один общий запрос; если МТС отметил `hasMore`,
+     * догружаем каждый контракт страницами по 1000 номеров.
+     * [progress] получает текст для экрана и число найденных номеров.
+     */
+    fun fetchAllNumbers(progress: (String, Int) -> Unit = { _, _ -> }): HierarchyPage {
+        progress("Запрашиваю структуру абонента…", 0)
+        val first = hierarchy()
+        if (!first.hasMore) return first
+        val contracts = LinkedHashMap<String, ContractInfo>().apply { first.contracts.forEach { put(it.id, it) } }
+        val numbers = LinkedHashMap<String, NumberInfo>().apply { first.numbers.forEach { put(it.msisdn, it) } }
+        for ((i, c) in first.contracts.withIndex()) {
+            var page = 1
+            while (page <= MAX_PAGES) {
+                progress("Контракт ${i + 1} из ${first.contracts.size}, страница $page", numbers.size)
+                val p = hierarchy(c.id, page, Hierarchy.MAX_PAGE_SIZE)
+                p.contracts.forEach { contracts.putIfAbsent(it.id, it) }
+                val before = numbers.size
+                p.numbers.forEach { numbers[it.msisdn] = it }
+                if (!p.hasMore || p.numbers.isEmpty() || numbers.size == before) break
+                page++
+            }
+        }
+        return HierarchyPage(contracts.values.toList(), numbers.values.toList(), false)
+    }
+
+    companion object {
+        /** Защита от бесконечной загрузки: 200 страниц × 1000 = 200 000 номеров на контракт. */
+        const val MAX_PAGES = 200
     }
 }

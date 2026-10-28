@@ -45,6 +45,11 @@ import java.util.concurrent.Executors
  */
 class ScanActivity : AppCompatActivity() {
 
+    companion object {
+        /** Сразу открыть выбор фото из галереи вместо камеры. */
+        const val EXTRA_GALLERY = "gallery"
+    }
+
     private lateinit var previewView: PreviewView
     private lateinit var overlay: MrzOverlayView
     private lateinit var status: TextView
@@ -72,7 +77,11 @@ class ScanActivity : AppCompatActivity() {
 
     private val pickImage = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) scanImage(uri)
+        else if (galleryOnly) finish()
     }
+
+    /** Открыт для выбора фото из галереи: камеру не запускаем. */
+    private val galleryOnly by lazy { intent.getBooleanExtra(EXTRA_GALLERY, false) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -86,22 +95,17 @@ class ScanActivity : AppCompatActivity() {
         workExecutor = Executors.newSingleThreadExecutor()
 
         findViewById<MaterialButton>(R.id.btn_gallery).setOnClickListener { pickImage.launch("image/*") }
-        findViewById<MaterialButton>(R.id.btn_manual).setOnClickListener {
-            ScanSession.clear()
-            startActivity(Intent(this, FormActivity::class.java))
-        }
-        findViewById<MaterialButton>(R.id.btn_history).setOnClickListener {
-            startActivity(Intent(this, HistoryActivity::class.java))
-        }
-        findViewById<MaterialButton>(R.id.btn_settings).setOnClickListener {
-            startActivity(Intent(this, SettingsActivity::class.java))
-        }
+        findViewById<MaterialButton>(R.id.btn_close).setOnClickListener { finish() }
         torchButton.setOnClickListener { camera?.cameraControl?.enableTorch(torchButton.isChecked) }
 
         // Тяжёлую инициализацию (словарь Tesseract) делаем заранее, пока человек наводит камеру.
         workExecutor.execute { runCatching { recognizer } }
 
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+        if (galleryOnly) {
+            paused = true
+            setBusy(false, getString(R.string.status_pick_photo))
+            if (savedInstanceState == null) pickImage.launch("image/*")
+        } else if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
             startCamera()
         } else {
             requestCamera.launch(Manifest.permission.CAMERA)
@@ -110,6 +114,7 @@ class ScanActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        if (galleryOnly) return   // статус и прогресс ведёт обработка выбранного фото
         paused = false
         grabFrame = null
         accumulator.clear()
@@ -232,13 +237,15 @@ class ScanActivity : AppCompatActivity() {
             }
             runOnUiThread {
                 if (result == null || (result.passport.mrzLines == null && result.passport.series == null)) {
-                    paused = false
+                    paused = galleryOnly
                     setBusy(false, getString(R.string.status_not_found))
                     Toast.makeText(this, R.string.status_not_found, Toast.LENGTH_LONG).show()
                 } else {
                     ScanSession.passport = result.passport
                     ScanSession.photo = result.photo
-                    startActivity(Intent(this, FormActivity::class.java))
+                    ScanSession.spread = Recognizer.limit(bitmap, 2000)
+                    setResult(RESULT_OK)
+                    finish()
                 }
             }
         }
@@ -255,7 +262,7 @@ class ScanActivity : AppCompatActivity() {
             }
             if (bmp == null) {
                 runOnUiThread {
-                    paused = false
+                    paused = galleryOnly
                     setBusy(false, getString(R.string.status_not_found))
                 }
             } else {

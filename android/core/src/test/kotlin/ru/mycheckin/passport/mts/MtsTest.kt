@@ -195,4 +195,77 @@ class MtsTest {
         val client2 = MtsClient(MtsConfig("k", "s", tokenUrl = "http://api.mts.ru/token"), RateLimiter(), { _, _, _, _ -> HttpResponse(200, "") })
         assertFailsWith<IllegalArgumentException> { client2.token() }
     }
+
+    private val hierarchyJson = """[{"description":"NationalContract","name":"ООО Ромашка","partyRole":[
+        {"type":"Customer","description":"Contract","id":"161374779436","characteristic":[{"name":"INN","value":"7700000000"},{"name":"KPP","value":"770001001"}],
+         "customerAccount":[{"accountType":"CustomerAccount","description":"Account","accountNo":"123456789",
+           "productRelationship":[
+             {"relationshipType":"ProductRelationship","description":"MSISDN","product":{"description":"МР Юг","productSerialNumber":"79896296939",
+               "productCharacteristic":[{"name":"IMSI","value":"250010000000001"},{"name":"SIM","value":"89701015388529130733"}]}},
+             {"relationshipType":"ProductRelationship","description":"MSISDN","product":{"description":"МР Юг","productSerialNumber":"79885701906",
+               "productCharacteristic":[{"name":"SIM","value":"89701015388574116447"}]}}]}]},
+        {"type":"Customer","description":"Contract","id":"222","customerAccount":[]}]}]"""
+
+    @Test fun parsesHierarchy() {
+        val h = Hierarchy.parse(hierarchyJson)
+        assertEquals(listOf("161374779436", "222"), h.contracts.map { it.id })
+        assertEquals("ООО Ромашка", h.contracts[0].orgName)
+        assertEquals("7700000000", h.contracts[0].inn)
+        assertEquals(2, h.numbers.size)
+        val n = h.numbers[0]
+        assertEquals("79896296939", n.msisdn)
+        assertEquals("89701015388529130733", n.iccid)
+        assertEquals("250010000000001", n.imsi)
+        assertEquals("123456789", n.accountNo)
+        assertEquals("МР Юг", n.region)
+        assertEquals(null, h.numbers[1].imsi)
+        assertTrue(!h.hasMore)
+        assertTrue(Hierarchy.parse("""[{"name":"x","partyRole":[],"hasMore":true}]""").hasMore)
+    }
+
+    @Test fun fetchAllPagesWhenHasMore() {
+        val urls = mutableListOf<String>()
+        val http = Http { _, url, _, _ ->
+            urls += url
+            when {
+                url.endsWith("/token") -> HttpResponse(200, """{"access_token":"t","expires_in":3600}""")
+                url.endsWith("/Service/HierarchyStructure") ->
+                    HttpResponse(200, """[{"name":"Org","hasMore":true,"partyRole":[{"id":"C1","customerAccount":[{"accountNo":"A","productRelationship":[
+                        {"product":{"productSerialNumber":"79000000001"}}]}]}]}]""")
+                url.contains("pageNum=1") -> HttpResponse(200, """[{"name":"Org","hasMore":true,"partyRole":[{"id":"C1","customerAccount":[{"accountNo":"A","productRelationship":[
+                        {"product":{"productSerialNumber":"79000000001"}},{"product":{"productSerialNumber":"79000000002"}}]}]}]}]""")
+                url.contains("pageNum=2") -> HttpResponse(200, """[{"name":"Org","partyRole":[{"id":"C1","customerAccount":[{"accountNo":"A","productRelationship":[
+                        {"product":{"productSerialNumber":"79000000003"}}]}]}]}]""")
+                else -> HttpResponse(404, "")
+            }
+        }
+        val client = MtsClient(MtsConfig("l", "p"), RateLimiter(clock = FakeClock()), http, FakeClock())
+        val all = client.fetchAllNumbers()
+        assertEquals(listOf("79000000001", "79000000002", "79000000003"), all.numbers.map { it.msisdn })
+        assertTrue(urls.any { it.endsWith("HierarchyStructure?contract=C1&pageNum=2&pageSize=1000") })
+        assertEquals(1 + 1 + 2, urls.size)   // токен + общий запрос + 2 страницы
+    }
+
+    @Test fun parsesOwnerInfo() {
+        val o = OwnerInfo.parse("""[{"placeOfBirth":"ГОР. КИРОВ","gender":"Male","name":"Дудин Павел Андреевич","id":"1",
+            "identifiedBy":[{"type":"IndividualDocumentIdentification","issuingAuthorityID":"430-024","documentType":"Паспорт гражданина РФ",
+              "issuedBy":"ОТДЕЛЕНИЕМ УФМС","documentNo":"092076","issuingCountry":"RU","documentSeries":"33 11","issuedDate":"2011-07-19T00:00:00"}],
+            "characteristic":[{"name":"PersonalDataConfirmation","value":"Activated"}],"birthDate":"1991-04-06T00:00:00",
+            "contactMedium":[{"type":"RegisteredAddress","addressType":"RegAddress","address":{"type":"RussianBasicAddress","country":"Россия",
+              "addressObject":{"type":"RussianBasicAddressObject","name":"Ростовская обл","objectType":"District",
+                "addressObject":{"type":"RussianBasicAddressObject","name":"Ростов-на-Дону","objectType":"City",
+                  "addressObject":{"type":"RussianBasicAddressObject","name":"Садовая","objectType":"Street",
+                    "addressObject":{"type":"RussianBasicHouseObject","number":"5","apartment":{"type":"RussianBasicApartment","number":"12"}}}}}}}]}]""")
+        assertEquals(listOf("Дудин", "Павел", "Андреевич"), listOf(o.surname, o.name, o.patronymic))
+        assertEquals('M', o.sex)
+        assertEquals(LocalDate.of(1991, 4, 6), o.birthDate)
+        assertEquals("3311", o.series)
+        assertEquals("092076", o.number)
+        assertEquals(LocalDate.of(2011, 7, 19), o.issueDate)
+        assertEquals("430-024", o.divisionCode)
+        assertTrue(o.confirmation.confirmed)
+        assertEquals(RegAddress(region = "Ростовская обл", city = "Ростов-на-Дону", street = "Садовая", house = "5", apartment = "12"), o.address)
+        val empty = OwnerInfo.parse("[]")
+        assertTrue(!empty.hasPassport && !empty.hasName && empty.confirmation.code == null)
+    }
 }

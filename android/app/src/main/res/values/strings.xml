@@ -1,18 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Сканер паспорта</string>
+    <string name="app_name">Учёт SIM</string>
     <string name="scan_title">Паспорт РФ</string>
     <string name="scan_hint">Наведите камеру на разворот с фото так, чтобы две нижние строки с символами &lt;&lt;&lt; попали в рамку, а весь разворот — в кадр</string>
     <string name="status_searching">Ищу машиночитаемую запись…</string>
     <string name="status_progress">Кадров: %1$d · контрольных сумм сошлось: %2$d из 4</string>
     <string name="status_processing">Обрабатываю фото…</string>
+    <string name="status_pick_photo">Выберите фото разворота паспорта</string>
     <string name="status_not_found">На фото не найдена машиночитаемая запись</string>
     <string name="no_camera_permission">Нет доступа к камере. Можно выбрать фото из галереи.</string>
     <string name="btn_gallery">Фото</string>
     <string name="btn_torch">Фонарик</string>
-    <string name="btn_manual">Вручную</string>
     <string name="btn_settings">Настройки</string>
-    <string name="btn_history">Заявки</string>
+    <string name="btn_close">Закрыть</string>
     <string name="status_reading_rest">MRZ прочитана. Распознаю остальные поля…</string>
     <string name="copied">Скопировано</string>
 </resources>

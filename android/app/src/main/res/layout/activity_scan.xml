@@ -38,19 +38,11 @@
                 android:textStyle="bold" />
 
             <com.google.android.material.button.MaterialButton
-                android:id="@+id/btn_history"
+                android:id="@+id/btn_close"
                 style="@style/Widget.Material3.Button.TonalButton"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginEnd="8dp"
-                android:text="@string/btn_history" />
-
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btn_settings"
-                style="@style/Widget.Material3.Button.TonalButton"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/btn_settings" />
+                android:text="@string/btn_close" />
         </LinearLayout>
 
         <TextView
@@ -110,14 +102,6 @@
                 android:checkable="true"
                 android:text="@string/btn_torch" />
 
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btn_manual"
-                style="@style/Widget.Material3.Button.TonalButton"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="10dp"
-                android:layout_weight="1"
-                android:text="@string/btn_manual" />
         </LinearLayout>
     </LinearLayout>
 </FrameLayout>

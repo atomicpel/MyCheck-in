@@ -11,34 +11,31 @@ import ru.mycheckin.passport.mts.RateLimiter
 import ru.mycheckin.passport.mts.field
 import ru.mycheckin.passport.mts.list
 import ru.mycheckin.passport.mts.str
-
-/** Отправленная заявка: номер телефона, владелец (Фамилия И. О.), номер заявки МТС и последний известный статус. */
-data class Submission(
-    val phone: String,
-    val holder: String,
-    val messageId: String,
-    val sentAt: Long,
-    val status: String = "",
-    val confirmation: String = "",
-    val checkedAt: Long = 0,
-)
+import java.util.UUID
 
 /**
- * Настройки и клиент МТС Бизнес API. Логин, пароль и журнал заявок хранятся
- * в зашифрованном хранилище (Android Keystore). Клиент один на приложение: общий кеш
- * токена и общий ограничитель частоты (8/с, 280/мин, 12,5 млн/мес — с запасом к тарифу 10/с, 300/мин).
+ * Доступ к МТС Бизнес API: у каждого контракта (пакета запросов) свои «Логин и пароль для интеграции».
+ * [title] — название для себя, например «Ростовский».
+ */
+data class MtsAccount(val id: String, val title: String, val login: String, val password: String) {
+    val isConfigured: Boolean get() = login.isNotBlank() && password.isNotBlank()
+}
+
+/**
+ * Доступы и клиенты МТС Бизнес API. Логины и пароли хранятся в зашифрованном хранилище (Android Keystore).
+ * На каждый доступ — свой клиент (кеш токена) и свой ограничитель частоты
+ * (8/с, 280/мин, 12,5 млн/мес — с запасом к тарифу 10/с, 300/мин).
  */
 object MtsService {
-    // Ключи хранилища остались прежними, чтобы введённые ранее данные сохранились.
-    private const val LOGIN = "consumer_key"
-    private const val PASSWORD = "consumer_secret"
+    private const val ACCOUNTS = "accounts"
     private const val TOKEN_URL = "token_url"
     private const val API_BASE = "api_base_url"
-    private const val LOG = "submissions"
-    private const val LOG_MAX = 200
+    // Прежний одиночный доступ (сборки 1–5) — переносится в список при первом запуске.
+    private const val OLD_LOGIN = "consumer_key"
+    private const val OLD_PASSWORD = "consumer_secret"
 
-    private var client: MtsClient? = null
-    private var limiter: RateLimiter? = null
+    private val clients = HashMap<String, MtsClient>()
+    private val limiters = HashMap<String, RateLimiter>()
     private var prefs: SharedPreferences? = null
 
     @Synchronized
@@ -50,84 +47,83 @@ object MtsService {
             app, "mts_settings", key,
             EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
             EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-        ).also { prefs = it }
+        ).also { prefs = it; migrate(it) }
     }
 
-    fun load(context: Context): MtsConfig {
-        val p = securePrefs(context)
-        return MtsConfig(
-            login = p.getString(LOGIN, "").orEmpty(),
-            password = p.getString(PASSWORD, "").orEmpty(),
-            tokenUrl = p.getString(TOKEN_URL, null)?.ifBlank { null } ?: MtsConfig.DEFAULT_TOKEN_URL,
-            apiBaseUrl = p.getString(API_BASE, null)?.ifBlank { null } ?: MtsConfig.DEFAULT_API_BASE,
-        )
+    private fun migrate(p: SharedPreferences) {
+        val login = p.getString(OLD_LOGIN, null)
+        if (p.contains(ACCOUNTS) || login.isNullOrBlank()) return
+        val acc = MtsAccount(UUID.randomUUID().toString(), "Контракт 1", login, p.getString(OLD_PASSWORD, "").orEmpty())
+        p.edit().putString(ACCOUNTS, encode(listOf(acc))).remove(OLD_LOGIN).remove(OLD_PASSWORD).apply()
+    }
+
+    private fun encode(list: List<MtsAccount>) = Json.write(list.map {
+        linkedMapOf("id" to it.id, "title" to it.title, "login" to it.login, "password" to it.password)
+    })
+
+    @Synchronized
+    fun accounts(context: Context): List<MtsAccount> {
+        val raw = securePrefs(context).getString(ACCOUNTS, null) ?: return emptyList()
+        return Json.parseOrNull(raw).list().mapNotNull { e ->
+            MtsAccount(
+                id = e.field("id").str() ?: return@mapNotNull null,
+                title = e.field("title").str().orEmpty(),
+                login = e.field("login").str().orEmpty(),
+                password = e.field("password").str().orEmpty(),
+            )
+        }
+    }
+
+    fun account(context: Context, id: String?): MtsAccount? = id?.let { i -> accounts(context).firstOrNull { it.id == i } }
+
+    fun hasAccounts(context: Context): Boolean = accounts(context).any { it.isConfigured }
+
+    @Synchronized
+    fun saveAccount(context: Context, a: MtsAccount) {
+        val list = accounts(context)
+        val updated = if (list.any { it.id == a.id }) list.map { if (it.id == a.id) a else it } else list + a
+        securePrefs(context).edit().putString(ACCOUNTS, encode(updated)).apply()
+        clients.remove(a.id)   // новый логин — новый токен
     }
 
     @Synchronized
-    fun save(context: Context, c: MtsConfig) {
-        securePrefs(context).edit()
-            .putString(LOGIN, c.login.trim()).putString(PASSWORD, c.password.trim())
-            .putString(TOKEN_URL, c.tokenUrl).putString(API_BASE, c.apiBaseUrl)
-            .apply()
-        client = null  // пересоздать с новыми настройками (токен тоже)
+    fun deleteAccount(context: Context, id: String) {
+        securePrefs(context).edit().putString(ACCOUNTS, encode(accounts(context).filter { it.id != id })).apply()
+        clients.remove(id)
     }
 
-    /** Счётчик вызовов за месяц переживает перезапуск приложения. */
+    fun newAccountId(): String = UUID.randomUUID().toString()
+
+    fun tokenUrl(context: Context): String =
+        securePrefs(context).getString(TOKEN_URL, null)?.ifBlank { null } ?: MtsConfig.DEFAULT_TOKEN_URL
+
+    fun apiBase(context: Context): String =
+        securePrefs(context).getString(API_BASE, null)?.ifBlank { null } ?: MtsConfig.DEFAULT_API_BASE
+
     @Synchronized
-    fun limiter(context: Context): RateLimiter {
-        limiter?.let { return it }
+    fun saveAddresses(context: Context, tokenUrl: String, apiBase: String) {
+        securePrefs(context).edit().putString(TOKEN_URL, tokenUrl).putString(API_BASE, apiBase).apply()
+        clients.clear()
+    }
+
+    /** Счётчик вызовов за месяц — свой у каждого доступа, переживает перезапуск приложения. */
+    @Synchronized
+    fun limiter(context: Context, accountId: String): RateLimiter {
+        limiters[accountId]?.let { return it }
         val prefs = context.applicationContext.getSharedPreferences("mts_usage", Context.MODE_PRIVATE)
         val store = object : RateLimiter.MonthlyStore {
-            override fun get(month: String) = prefs.getLong(month, 0L)
+            override fun get(month: String) = prefs.getLong("$accountId:$month", 0L)
             override fun set(month: String, value: Long) {
-                prefs.edit().putLong(month, value).apply()
+                prefs.edit().putLong("$accountId:$month", value).apply()
             }
         }
-        return RateLimiter(perSecond = 8, perMinute = 280, perMonth = 12_500_000, monthlyStore = store).also { limiter = it }
+        return RateLimiter(perSecond = 8, perMinute = 280, perMonth = 12_500_000, monthlyStore = store).also { limiters[accountId] = it }
     }
 
     @Synchronized
-    fun client(context: Context): MtsClient {
-        client?.let { return it }
-        return MtsClient(load(context), limiter(context)).also { client = it }
+    fun client(context: Context, account: MtsAccount): MtsClient {
+        clients[account.id]?.let { return it }
+        val config = MtsConfig(account.login, account.password, tokenUrl(context), apiBase(context))
+        return MtsClient(config, limiter(context, account.id)).also { clients[account.id] = it }
     }
-
-    // ---- Журнал отправленных заявок ----
-
-    @Synchronized
-    fun submissions(context: Context): List<Submission> {
-        val raw = securePrefs(context).getString(LOG, null) ?: return emptyList()
-        return Json.parseOrNull(raw).list().mapNotNull { e ->
-            val id = e.field("messageId").str() ?: return@mapNotNull null
-            Submission(
-                phone = e.field("phone").str().orEmpty(),
-                holder = e.field("holder").str().orEmpty(),
-                messageId = id,
-                sentAt = e.field("sentAt").str()?.toLongOrNull() ?: 0,
-                status = e.field("status").str().orEmpty(),
-                confirmation = e.field("confirmation").str().orEmpty(),
-                checkedAt = e.field("checkedAt").str()?.toLongOrNull() ?: 0,
-            )
-        }
-    }
-
-    @Synchronized
-    private fun write(context: Context, list: List<Submission>) {
-        val json = Json.write(list.take(LOG_MAX).map {
-            linkedMapOf(
-                "phone" to it.phone, "holder" to it.holder, "messageId" to it.messageId, "sentAt" to it.sentAt,
-                "status" to it.status, "confirmation" to it.confirmation, "checkedAt" to it.checkedAt,
-            )
-        })
-        securePrefs(context).edit().putString(LOG, json).apply()
-    }
-
-    @Synchronized
-    fun addSubmission(context: Context, s: Submission) = write(context, listOf(s) + submissions(context).filter { it.messageId != s.messageId })
-
-    @Synchronized
-    fun updateSubmission(context: Context, s: Submission) = write(context, submissions(context).map { if (it.messageId == s.messageId) s else it })
-
-    @Synchronized
-    fun removeSubmission(context: Context, messageId: String) = write(context, submissions(context).filter { it.messageId != messageId })
 }

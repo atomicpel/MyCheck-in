@@ -4,7 +4,7 @@
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.VIBRATE" />
-    <!-- Интернет нужен только для отправки данных в МТС Бизнес API (только https). -->
+    <!-- Интернет нужен только для МТС Бизнес API (только https). -->
     <uses-permission android:name="android.permission.INTERNET" />
 
     <application
@@ -17,8 +17,9 @@
         android:theme="@style/Theme.Scanner">
 
         <activity
-            android:name=".ScanActivity"
-            android:exported="true">
+            android:name=".SimListActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustPan">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -26,16 +27,29 @@
         </activity>
 
         <activity
-            android:name=".FormActivity"
+            android:name=".SimEditActivity"
             android:exported="false"
             android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name=".ScanActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Scanner.Camera" />
 
         <activity
             android:name=".SettingsActivity"
             android:exported="false"
             android:windowSoftInputMode="adjustResize" />
-        <activity
-            android:name=".HistoryActivity"
-            android:exported="false" />
+
+        <!-- Выгрузка CSV в Excel / мессенджеры -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 </manifest>

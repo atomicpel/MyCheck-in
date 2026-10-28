@@ -1,7 +1,54 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <style name="Theme.Scanner" parent="Theme.Material3.DayNight.NoActionBar">
-        <item name="colorPrimary">@color/brand</item>
-        <item name="colorSecondary">@color/brand</item>
+        <item name="colorPrimary">@color/md_primary</item>
+        <item name="colorOnPrimary">@color/md_on_primary</item>
+        <item name="colorPrimaryContainer">@color/md_primary_container</item>
+        <item name="colorOnPrimaryContainer">@color/md_on_primary_container</item>
+        <item name="colorSecondary">@color/md_secondary</item>
+        <item name="colorSecondaryContainer">@color/md_secondary_container</item>
+        <item name="colorOnSecondaryContainer">@color/md_on_secondary_container</item>
+        <item name="colorSurface">@color/md_surface</item>
+        <item name="android:colorBackground">@color/md_surface</item>
+        <item name="colorSurfaceContainer">@color/md_surface_container</item>
+        <item name="colorSurfaceContainerHigh">@color/md_surface_container_high</item>
+        <item name="colorOutlineVariant">@color/md_outline_variant</item>
+        <item name="android:statusBarColor">@color/md_surface</item>
+        <item name="android:navigationBarColor">@color/md_surface</item>
+        <item name="android:windowLightStatusBar">@bool/light_bars</item>
+        <item name="android:windowLightNavigationBar">@bool/light_bars</item>
+        <item name="shapeAppearanceCornerMedium">@style/Shape.Sim.Medium</item>
+        <item name="shapeAppearanceCornerLarge">@style/Shape.Sim.Large</item>
+        <item name="textInputStyle">@style/Widget.Sim.TextInput</item>
+    </style>
+
+    <style name="Shape.Sim.Medium" parent="">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSize">16dp</item>
+    </style>
+
+    <style name="Shape.Sim.Large" parent="">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSize">24dp</item>
+    </style>
+
+    <style name="Widget.Sim.TextInput" parent="Widget.Material3.TextInputLayout.OutlinedBox">
+        <item name="boxCornerRadiusTopStart">14dp</item>
+        <item name="boxCornerRadiusTopEnd">14dp</item>
+        <item name="boxCornerRadiusBottomStart">14dp</item>
+        <item name="boxCornerRadiusBottomEnd">14dp</item>
+    </style>
+
+    <style name="Text.Sim.Section" parent="TextAppearance.Material3.TitleMedium">
+        <item name="android:textColor">?attr/colorPrimary</item>
+        <item name="android:textStyle">bold</item>
+    </style>
+
+    <!-- Экран камеры остаётся тёмным в любой теме -->
+    <style name="Theme.Scanner.Camera" parent="Theme.Scanner">
+        <item name="android:statusBarColor">#000000</item>
+        <item name="android:navigationBarColor">#000000</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
     </style>
 </resources>
