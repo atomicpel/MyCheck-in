@@ -420,8 +420,13 @@ class SimEditActivity : AppCompatActivity() {
         val notesList = p.issues.filter { it.level != Level.INFO }.map { (if (it.level == Level.ERROR) "⛔ " else "⚠️ ") + it.message }
         val checks = if (p.checks.isNotEmpty()) "Контрольные суммы MRZ: ${p.checks.values.count { it }} из ${p.checks.size}" else null
         val ok = p.allChecksPassed && notesList.isEmpty()
+        val noMrz = p.source == "viz"
         scanNote.text = (listOfNotNull(
-            if (ok) "✓ Паспорт распознан, контрольные суммы сошлись" else "Паспорт распознан — проверьте поля",
+            when {
+                noMrz -> "Паспорт без полосы MRZ: все поля прочитаны с фото без контрольных сумм — сверьте каждое поле с паспортом"
+                ok -> "✓ Паспорт распознан, контрольные суммы сошлись"
+                else -> "Паспорт распознан — проверьте поля"
+            },
             checks,
             "«Кем выдан» и место рождения прочитаны с фото — сверьте с паспортом",
         ) + notesList).joinToString("\n")

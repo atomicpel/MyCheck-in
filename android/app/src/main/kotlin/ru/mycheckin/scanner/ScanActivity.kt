@@ -55,6 +55,17 @@ class ScanActivity : AppCompatActivity() {
     private lateinit var status: TextView
     private lateinit var progress: ProgressBar
     private lateinit var torchButton: MaterialButton
+    private lateinit var shotButton: MaterialButton
+    private val handler = android.os.Handler(android.os.Looper.getMainLooper())
+
+    /** Через 7 секунд без MRZ подсказать про старый паспорт и кнопку «Снять». */
+    private val noMrzHint = Runnable {
+        if (paused || galleryOnly || accumulator.size > 0 && overlay.progress > 0) return@Runnable
+        status.setText(R.string.status_no_mrz_hint)
+        shotButton.animate().scaleX(1.1f).scaleY(1.1f).setDuration(220).withEndAction {
+            shotButton.animate().scaleX(1f).scaleY(1f).setDuration(220).start()
+        }.start()
+    }
 
     private var camera: Camera? = null
     private var imageCapture: ImageCapture? = null
@@ -96,6 +107,9 @@ class ScanActivity : AppCompatActivity() {
 
         findViewById<MaterialButton>(R.id.btn_gallery).setOnClickListener { pickImage.launch("image/*") }
         findViewById<MaterialButton>(R.id.btn_close).setOnClickListener { finish() }
+        shotButton = findViewById(R.id.btn_shot)
+        shotButton.setOnClickListener { manualShot() }
+        if (galleryOnly) shotButton.visibility = View.GONE
         torchButton.setOnClickListener { camera?.cameraControl?.enableTorch(torchButton.isChecked) }
 
         // Тяжёлую инициализацию (словарь Tesseract) делаем заранее, пока человек наводит камеру.
@@ -115,12 +129,31 @@ class ScanActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         if (galleryOnly) return   // статус и прогресс ведёт обработка выбранного фото
+        handler.removeCallbacks(noMrzHint)
+        handler.postDelayed(noMrzHint, 7000)
         paused = false
         grabFrame = null
         accumulator.clear()
         overlay.progress = 0
         setBusy(false)
         status.setText(R.string.status_searching)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        handler.removeCallbacks(noMrzHint)
+    }
+
+    /** Ручной снимок: для старых паспортов без MRZ или если полоса плохо читается. */
+    private fun manualShot() {
+        if (paused) return
+        paused = true
+        handler.removeCallbacks(noMrzHint)
+        vibrate()
+        // Если по видеопотоку MRZ уже надёжно прочитана — передадим её, иначе распознаём без неё.
+        val hint = accumulator.result()?.takeIf { it.allChecksPassed }?.mrzLines
+        capture(hint)
+        if (hint == null) status.setText(R.string.status_manual)
     }
 
     override fun onDestroy() {
@@ -236,12 +269,16 @@ class ScanActivity : AppCompatActivity() {
                 null
             }
             runOnUiThread {
-                if (result == null || (result.passport.mrzLines == null && result.passport.series == null)) {
+                val p = result?.passport
+                val found = p != null && (p.mrzLines != null || p.series != null || p.surname != null ||
+                    p.birthDate != null || p.issueDate != null || p.divisionCode != null)
+                if (!found) {
                     paused = galleryOnly
                     setBusy(false, getString(R.string.status_not_found))
                     Toast.makeText(this, R.string.status_not_found, Toast.LENGTH_LONG).show()
+                    if (!galleryOnly) { handler.removeCallbacks(noMrzHint); handler.postDelayed(noMrzHint, 7000) }
                 } else {
-                    ScanSession.passport = result.passport
+                    ScanSession.passport = result!!.passport
                     ScanSession.photo = result.photo
                     ScanSession.spread = Recognizer.limit(bitmap, 2000)
                     setResult(RESULT_OK)

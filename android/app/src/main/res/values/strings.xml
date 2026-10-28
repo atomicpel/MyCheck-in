@@ -2,17 +2,20 @@
 <resources>
     <string name="app_name">Учёт SIM</string>
     <string name="scan_title">Паспорт РФ</string>
-    <string name="scan_hint">Наведите камеру на разворот с фото так, чтобы две нижние строки с символами &lt;&lt;&lt; попали в рамку, а весь разворот — в кадр</string>
+    <string name="scan_hint">Наведите камеру на разворот с фото так, чтобы две нижние строки с символами &lt;&lt;&lt; попали в рамку, а весь разворот — в кадр. В старом паспорте без этих строк — нажмите «Снять»</string>
     <string name="status_searching">Ищу машиночитаемую запись…</string>
     <string name="status_progress">Кадров: %1$d · контрольных сумм сошлось: %2$d из 4</string>
     <string name="status_processing">Обрабатываю фото…</string>
     <string name="status_pick_photo">Выберите фото разворота паспорта</string>
-    <string name="status_not_found">На фото не найдена машиночитаемая запись</string>
+    <string name="status_not_found">Паспорт не распознан. Снимите разворот целиком, ровнее и при хорошем свете — или заполните поля вручную</string>
     <string name="no_camera_permission">Нет доступа к камере. Можно выбрать фото из галереи.</string>
     <string name="btn_gallery">Фото</string>
     <string name="btn_torch">Фонарик</string>
     <string name="btn_settings">Настройки</string>
     <string name="btn_close">Закрыть</string>
+    <string name="btn_shot">Снять</string>
+    <string name="status_no_mrz_hint">Полоса с символами &lt;&lt;&lt; не найдена. Старый паспорт без неё? Наведите на весь разворот и нажмите «Снять»</string>
+    <string name="status_manual">Снимок без полосы MRZ: распознаю текст разворота…</string>
     <string name="status_reading_rest">MRZ прочитана. Распознаю остальные поля…</string>
     <string name="copied">Скопировано</string>
 </resources>

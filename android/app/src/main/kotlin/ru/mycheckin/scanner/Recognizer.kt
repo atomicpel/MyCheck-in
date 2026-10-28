@@ -33,6 +33,8 @@ import java.time.LocalDate
  * 2. По якорям (MRZ, дата выдачи, дата рождения) вычисляются области «Кем выдан»,
  *    ФИО и «Место рождения» — их читает Tesseract с русским словарём.
  * 3. Серия и номер — из MRZ, а если её начало закрыто — из вертикальной надписи у края.
+ *    Старый паспорт без MRZ: поворот и якоря определяются по датам и коду подразделения,
+ *    серия и номер — с вертикальной надписи, всё без контрольных сумм.
  * 4. ML Kit находит лицо и вырезает фото владельца.
  *
  * Все методы блокирующие — вызывать не из главного потока.
@@ -93,8 +95,10 @@ class Recognizer(private val context: Context) : Closeable {
         var bestRot = 0
         var bestMrz: PassportData? = null
         var bestText: Text? = null
+        val texts = LinkedHashMap<Int, Text>()
         for (rot in intArrayOf(0, 90, 270, 180)) {
             val t = latin(rotate(source, rot))
+            texts[rot] = t
             val d = Mrz.parseText(OcrText.rows(t), today)
             if (d != null && (bestMrz == null || score(d) > score(bestMrz))) {
                 bestMrz = d
@@ -102,6 +106,11 @@ class Recognizer(private val context: Context) : Closeable {
                 bestText = t
             }
             if (d != null && d.allChecksPassed) break
+        }
+        // Старый паспорт без MRZ: поворот выбираем по тому, где читаются даты и код подразделения.
+        if (bestMrz == null && mrzHint == null && texts.isNotEmpty()) {
+            bestRot = texts.maxByOrNull { (_, t) -> Viz.orientationScore(t.text) }!!.key
+            bestText = texts[bestRot]
         }
         val page = rotate(source, bestRot)
         val text = bestText ?: latin(page)
@@ -117,9 +126,12 @@ class Recognizer(private val context: Context) : Closeable {
         return Result(merged, cropFace(page))
     }
 
-    private class Anchors(val mrz: Rect?, val issue: Rect?, val birth: Rect?)
+    private class Anchors(
+        val mrz: Rect?, val issue: Rect?, val birth: Rect?,
+        val issueDate: LocalDate? = null, val birthDate: LocalDate? = null,
+    )
 
-    private fun anchors(text: Text, mrz: PassportData?): Anchors {
+    private fun anchors(text: Text, mrz: PassportData?, pageHeight: Int): Anchors {
         val lines = text.textBlocks.flatMap { it.lines }.filter { it.boundingBox != null }
         val mrzRect = lines.filter { Viz.isMrzLine(it.text) || "PNRUS" in it.text }
             .map { Rect(it.boundingBox!!) }
@@ -129,11 +141,17 @@ class Recognizer(private val context: Context) : Closeable {
         val issue = lineWith(mrz?.issueDate)
             ?: lines.firstOrNull { !Viz.isMrzLine(it.text) && Viz.divisionCode(it.text) != null }?.boundingBox
         val birth = lineWith(mrz?.birthDate)
+        if (mrz == null) {
+            // Без MRZ даты неизвестны заранее — ищем строки с датой выдачи и датой рождения по расположению.
+            val found = Viz.locateNoMrz(lines.map { Viz.Line(it.text, it.boundingBox!!.top, it.boundingBox!!.bottom) }, pageHeight)
+            fun rectOf(l: Viz.Line?) = l?.let { x -> lines.firstOrNull { it.text == x.text && it.boundingBox!!.top == x.top }?.boundingBox }
+            return Anchors(mrzRect, rectOf(found.issue) ?: issue, rectOf(found.birth), found.issueDate, found.birthDate)
+        }
         return Anchors(mrzRect, issue, birth)
     }
 
     private fun readViz(page: Bitmap, text: Text, mrz: PassportData?): VizFields {
-        val a = anchors(text, mrz)
+        val a = anchors(text, mrz, page.height)
         val w = page.width
         val pageL = a.mrz?.left ?: (w * 0.05).toInt()
         val pageR = a.mrz?.right ?: (w * 0.95).toInt()
@@ -147,12 +165,12 @@ class Recognizer(private val context: Context) : Closeable {
 
         a.issue?.let { r ->
             val h = r.height().coerceAtLeast(10)
-            viz.issueDate = mrz?.issueDate ?: Viz.dates(latinText).firstOrNull()
+            viz.issueDate = mrz?.issueDate ?: a.issueDate ?: Viz.dates(latinText).firstOrNull()
             viz.issuedBy = Viz.joinLines(ocrRu(page, Rect(pageL, r.top - 6 * h, right, r.top), h))
         }
         a.birth?.let { r ->
             val h = r.height().coerceAtLeast(10)
-            viz.birthDate = mrz?.birthDate
+            viz.birthDate = mrz?.birthDate ?: a.birthDate
             val names = ocrRu(page, Rect(valueLeft, r.top - 7 * h, right, r.bottom + h / 3), h)
             viz.sex = Viz.sex(names.joinToString(" "))
             val words = names.filter { Viz.dates(it).isEmpty() }.mapNotNull(Viz::nameWord).takeLast(3)

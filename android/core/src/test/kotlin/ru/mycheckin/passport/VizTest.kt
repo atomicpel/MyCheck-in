@@ -89,4 +89,45 @@ class VizTest {
         assertTrue(d.issues.any { it.code == "no_mrz" })
         assertNull(d.mrzLines)
     }
+
+    // ---- Старые паспорта без MRZ ----
+
+    private val oldPassport = """
+        РОССИЙСКАЯ ФЕДЕРАЦИЯ
+        ОТДЕЛОМ ВНУТРЕННИХ ДЕЛ
+        ЛЕНИНСКОГО РАЙОНА ГОР. КЕРЧИ
+        12.03.2004 912-003
+        ДУДИН
+        ПАВЕЛ
+        АНДРЕЕВИЧ
+        МУЖ. 06.04.1981
+        ГОР. КИРОВ
+    """.trimIndent()
+
+    @Test fun parsesOldPassportWithoutMrz() {
+        val f = Viz.parseFullText(oldPassport, null)
+        assertEquals(java.time.LocalDate.of(2004, 3, 12), f.issueDate)
+        assertEquals(java.time.LocalDate.of(1981, 4, 6), f.birthDate)
+        assertEquals("912-003", f.divisionCode)
+        assertEquals("ГОР. КИРОВ", f.birthPlace)
+        assertEquals(listOf("Дудин", "Павел", "Андреевич"), listOf(f.surname, f.name, f.patronymic))
+        assertEquals('M', f.sex)
+        val d = Viz.merge(null, f)
+        assertEquals("viz", d.source)
+        assertTrue(d.issues.any { it.code == "no_mrz" })
+    }
+
+    @Test fun findsAnchorsWithoutMrz() {
+        val lines = listOf(
+            Viz.Line("12.03.2004 912-003", 400, 440),
+            Viz.Line("ПРИМЕР 01.01.2030", 100, 130),          // шум с датой в будущем
+            Viz.Line("МУЖ. 06.04.1981", 1500, 1540),
+            Viz.Line("Подпись 20.05.2010", 1800, 1830),       // поздняя дата ниже — не дата рождения
+        )
+        val a = Viz.locateNoMrz(lines, 2000, java.time.LocalDate.of(2026, 10, 28))
+        assertEquals(java.time.LocalDate.of(2004, 3, 12), a.issueDate)
+        assertEquals(java.time.LocalDate.of(1981, 4, 6), a.birthDate)
+        assertEquals(1500, a.birth?.top)
+        assertTrue(Viz.orientationScore("12.03.2004 912-003\n06.04.1981") > Viz.orientationScore("ЕOО2.Е0.21 300-219"))
+    }
 }

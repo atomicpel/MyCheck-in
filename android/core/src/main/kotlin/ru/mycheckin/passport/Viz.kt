@@ -145,6 +145,47 @@ object Viz {
         }
     }
 
+    /** Строка текста с положением на снимке (для поиска якорей без MRZ). */
+    data class Line(val text: String, val top: Int, val bottom: Int) {
+        val centerY: Int get() = (top + bottom) / 2
+    }
+
+    /** Якоря старого паспорта без MRZ: строка с датой выдачи и строка с датой рождения. */
+    data class NoMrzAnchors(val issue: Line?, val issueDate: LocalDate?, val birth: Line?, val birthDate: LocalDate?)
+
+    /**
+     * Насколько похоже, что снимок повёрнут правильно: читаются даты и код подразделения.
+     * Нужен для старых паспортов, где нет MRZ, по которой определяется поворот.
+     */
+    fun orientationScore(text: String): Int {
+        val flat = text.lines().filterNot(::isMrzLine).joinToString("\n")
+        return dates(flat).size * 2 + (if (DIVISION.containsMatchIn(flat)) 3 else 0) +
+            (if (SERIES_NUMBER.containsMatchIn(flat.replace(" ", ""))) 1 else 0)
+    }
+
+    /**
+     * Якоря разворота без MRZ. Верхняя страница: «Кем выдан», дата выдачи и код подразделения;
+     * нижняя: ФИО, пол, дата рождения, место рождения.
+     * Дата выдачи — строка с кодом подразделения (или первая дата в верхней половине);
+     * дата рождения — дата ниже неё, не позже чем за 14 лет до выдачи.
+     */
+    fun locateNoMrz(lines: List<Line>, pageHeight: Int, today: LocalDate = LocalDate.now()): NoMrzAnchors {
+        val usable = lines.filterNot { isMrzLine(it.text) }.sortedBy { it.centerY }
+        val withDates = usable.mapNotNull { l -> dates(l.text).firstOrNull()?.let { l to it } }
+            .filter { (_, d) -> d.year in 1900..today.year && !d.isAfter(today) }
+        val issuePair = usable.firstOrNull { DIVISION.containsMatchIn(it.text) && dates(it.text).isNotEmpty() }
+            ?.let { l -> l to dates(l.text).first() }
+            ?: withDates.firstOrNull { (l, _) -> l.centerY < pageHeight / 2 }
+            ?: usable.firstOrNull { DIVISION.containsMatchIn(it.text) }?.let { it to null }
+        val issue = issuePair?.first
+        val issueDate = issuePair?.second
+        val birthPair = withDates.filter { (l, d) ->
+            l != issue && (issue == null || l.centerY > issue.bottom) &&
+                (issueDate == null || d.plusYears(14) <= issueDate)
+        }.minByOrNull { (l, _) -> l.centerY }
+        return NoMrzAnchors(issue, issueDate, birthPair?.first, birthPair?.second)
+    }
+
     /**
      * Разбор всего текста страницы по якорям (когда нет координат областей).
      * [mrz] — данные MRZ, если уже распознаны: их даты служат якорями.
@@ -158,7 +199,13 @@ object Viz {
         f.sex = sex(flat)
 
         val issueIdx = lines.indexOfFirst { !isMrzLine(it) && (lineHasDate(it, mrz?.issueDate) || DIVISION.containsMatchIn(it)) }
-        val birthIdx = lines.indexOfLast { !isMrzLine(it) && lineHasDate(it, mrz?.birthDate) && it != lines.getOrNull(issueIdx) }
+        // Без MRZ дата рождения неизвестна: берём первую дату ниже даты выдачи, не позже чем за 14 лет до неё.
+        val issueDateGuess = lines.getOrNull(issueIdx)?.let { dates(it).firstOrNull() }
+        val birthNoMrz = if (mrz?.birthDate == null && issueIdx >= 0) (issueIdx + 1 until lines.size).firstOrNull { i ->
+            !isMrzLine(lines[i]) && dates(lines[i]).any { issueDateGuess == null || !it.plusYears(14).isAfter(issueDateGuess) }
+        } else null
+        val birthIdx = birthNoMrz
+            ?: lines.indexOfLast { !isMrzLine(it) && lineHasDate(it, mrz?.birthDate) && it != lines.getOrNull(issueIdx) }
         // Первая строка MRZ ниже даты рождения (шум выше по странице не в счёт).
         val mrzIdx = (birthIdx + 1 until lines.size).firstOrNull { isMrzLine(lines[it]) } ?: lines.size
 
@@ -169,7 +216,8 @@ object Viz {
             f.issuedBy = joinLines(lines.subList(from, issueIdx))
         }
         if (birthIdx >= 0) {
-            f.birthDate = dates(lines[birthIdx]).lastOrNull()
+            f.birthDate = if (birthNoMrz != null) dates(lines[birthIdx]).firstOrNull { issueDateGuess == null || !it.plusYears(14).isAfter(issueDateGuess) }
+                else dates(lines[birthIdx]).lastOrNull()
             f.birthPlace = joinLines(lines.subList(birthIdx + 1, maxOf(birthIdx + 1, minOf(mrzIdx, birthIdx + 4))))
             // ФИО — до трёх строк над датой рождения (ниже даты выдачи).
             val names = lines.subList(maxOf(issueIdx + 1, birthIdx - 7), birthIdx).mapNotNull(::nameWord).takeLast(3)
