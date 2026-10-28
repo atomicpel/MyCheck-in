@@ -42,7 +42,17 @@ jobs:
           SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
           SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
           SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
-        run: ./gradlew :core:test :app:assembleRelease --stacktrace
+        run: |
+          set -o pipefail
+          ./gradlew :core:test :app:assembleRelease --stacktrace 2>&1 | tee build.log
+
+      # При ошибке — первые ошибки компиляции в аннотации запуска (видны без скачивания логов).
+      - name: Report build errors
+        if: failure()
+        run: |
+          grep -E "^e: |error:|What went wrong|FAILED|> .*Exception" build.log | head -40 | while IFS= read -r line; do
+            echo "::error::${line}"
+          done || true
 
       # Проверка итогового APK: разрешения и наличие словаря Tesseract.
       - name: Verify APK
