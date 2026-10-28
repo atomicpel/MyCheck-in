@@ -46,7 +46,8 @@ class MtsTest {
         assertEquals("79123456789", PersonalDataApi.normalizeMsisdn("8 (912) 345-67-89"))
         assertEquals("79123456789", PersonalDataApi.normalizeMsisdn("+7 912 345 67 89"))
         assertEquals("79123456789", PersonalDataApi.normalizeMsisdn("9123456789"))
-        assertEquals(null, PersonalDataApi.normalizeMsisdn("84951234567"))
+        assertEquals("74951234567", PersonalDataApi.normalizeMsisdn("84951234567"))
+        assertEquals("76610047024", PersonalDataApi.normalizeMsisdn("76610047024"))   // M2M/корпоративный номер МТС
         assertEquals(null, PersonalDataApi.normalizeMsisdn("12345"))
     }
 

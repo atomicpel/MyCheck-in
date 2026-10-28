@@ -85,7 +85,10 @@ object PersonalDataApi {
 
     const val INFO_PATH = "/PersonalData/PersonalDataInfo"
 
-    /** Номер в формате 7XXXXXXXXXX или null, если это не мобильный номер РФ. */
+    /**
+     * Номер в формате 7XXXXXXXXXX (так его ждёт МТС) или null, если это не 10–11 цифр.
+     * Не только 7 9XX: у корпоративных и M2M-SIM МТС бывают номера 7 6XX, 7 010 и др.
+     */
     fun normalizeMsisdn(phone: String): String? {
         val d = phone.filter { it.isDigit() }
         val n = when {
@@ -93,14 +96,14 @@ object PersonalDataApi {
             d.length == 11 && (d[0] == '7' || d[0] == '8') -> "7" + d.drop(1)
             else -> return null
         }
-        return n.takeIf { it[1] == '9' }
+        return n
     }
 
     private fun dateTime(d: LocalDate) = "${d}T00:00:00"
 
     /** Что не даст МТС принять запрос — проверяется до отправки, чтобы не тратить вызовы. */
     fun problems(p: PassportData, msisdn: String?, address: RegAddress? = null): List<String> = buildList {
-        if (msisdn == null) add("Номер телефона: нужен мобильный номер РФ, 7 9XX XXX-XX-XX")
+        if (msisdn == null) add("Номер телефона: нужно 11 цифр, +7 XXX XXX-XX-XX")
         if (p.surname.isNullOrBlank()) add("Не указана фамилия")
         if (p.name.isNullOrBlank()) add("Не указано имя")
         if (p.sex != 'M' && p.sex != 'F') add("Не указан пол")

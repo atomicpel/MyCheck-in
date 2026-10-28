@@ -316,7 +316,6 @@ class SimEditActivity : AppCompatActivity() {
             need(surname, R.id.surname_layout); need(name, R.id.name_layout); need(birthDate, R.id.birth_date_layout)
             need(series, R.id.series_layout); need(number, R.id.number_layout); need(issueDate, R.id.issue_date_layout)
             need(divisionCode, R.id.division_code_layout); need(issuedBy, R.id.issued_by_layout)
-            if (PassportMsisdn.isMobile(msisdnOf(phone.text.toString())) == false) err(R.id.phone_layout, "МТС принимает только мобильный номер +7 9XX")
         }
         val bad = all.firstOrNull { layout(it).error != null }
         if (bad != null) {
@@ -667,10 +666,6 @@ class SimEditActivity : AppCompatActivity() {
     }
 }
 
-/** Мобильный ли номер (МТС вносит данные только для 7 9XX…). */
-object PassportMsisdn {
-    fun isMobile(msisdn: String?): Boolean? = msisdn?.let { it.length == 11 && it[1] == '9' }
-}
 
 /** Маска даты ДД.ММ.ГГГГ: точки ставятся сами. */
 object DateMask {

@@ -296,7 +296,7 @@ object Journal {
             appendLine()
             appendLine("[${SimFormat.time(e.time)}] ${e.level.label.uppercase()} · ${e.category.label} · ${e.title}")
             if (e.msisdn.isNotEmpty()) appendLine("Номер: ${SimFormat.phone(e.msisdn)}")
-            if (e.account.isNotEmpty()) appendLine("Доступ: ${e.account}")
+            if (e.account.isNotEmpty() && !e.details.startsWith("Доступ:")) appendLine("Доступ: ${e.account}")
             if (e.details.isNotEmpty()) appendLine(e.details)
             for (x in exchanges(context, e.id)) {
                 appendLine("  → ${x.method} ${x.url}  [${x.code ?: "нет ответа"}, ${x.durationMs} мс, попытка ${x.attempt}]")
