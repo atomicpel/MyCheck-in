@@ -328,9 +328,13 @@ object Journal {
             "HierarchyStructure" in x.url -> runCatching { ru.mycheckin.passport.mts.Hierarchy.parse(x.responseBody) }.getOrNull()
                 ?.let { "контрактов ${it.contracts.size}, номеров ${it.numbers.size}" + if (it.hasMore) ", есть ещё (hasMore)" else "" }
             "ChangePersonalData" in x.url -> {
-                val code = j.field("response").field("ErrorCode").str().orEmpty()
-                val id = j.field("MessageId").str()
-                if (code.isEmpty() && id != null) "заявка $id" else "ErrorCode $code ${j.field("response").field("ErrorDescription").str().orEmpty()}"
+                val sent = Json.parseOrNull(x.requestBody).field("SubscriberInformation").field("MessageId").str()
+                val r = ru.mycheckin.passport.mts.PersonalDataApi.parseSubmit(x.responseBody, sent)
+                when {
+                    r.accepted && r.messageIdFromResponse -> "принято, заявка ${r.messageId}"
+                    r.accepted -> "принято (ErrorCode пустой), заявка ${r.messageId} — номер из запроса"
+                    else -> "отклонено: ErrorCode ${r.errorCode.ifEmpty { "—" }} ${r.errorDescription}".trim()
+                }
             }
             "GetOperationResult" in x.url -> j.field("response").field("Body").field("GetOperationResultResult").list().lastOrNull()
                 .field("BusinessProcessCommonResult").field("State").str()?.let { "состояние $it" }

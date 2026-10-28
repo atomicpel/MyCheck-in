@@ -152,7 +152,8 @@ object SimActions {
                 if (r.accepted) {
                     val updated = sim.copy(messageId = r.messageId!!, opStatus = "InProgress", confirmation = "", sentAt = System.currentTimeMillis())
                     val id = SimDb.get(context).save(updated)
-                    op.line("Заявка принята, номер ${r.messageId}")
+                    op.line("Заявка принята, номер ${r.messageId}" +
+                        if (r.messageIdFromResponse) "" else " (МТС не вернул номер в ответе — используется номер из запроса)")
                     op.ok("Паспорт отправлен в МТС: заявка принята")
                     Sent(updated.copy(id = id), true,
                         "Номер заявки: ${r.messageId}\n\nВладельцу номера придёт SMS от МТС: данные нужно подтвердить на Госуслугах " +

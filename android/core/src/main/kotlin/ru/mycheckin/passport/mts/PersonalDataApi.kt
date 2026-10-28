@@ -20,8 +20,15 @@ data class RegAddress(
 }
 
 /** Ответ на внесение данных: заявка принята, если [errorCode] пустой и есть [messageId]. */
-data class SubmitResult(val errorCode: String, val errorDescription: String, val messageId: String?) {
-    val accepted: Boolean get() = errorCode.isBlank() && !messageId.isNullOrBlank()
+data class SubmitResult(
+    val errorCode: String,
+    val errorDescription: String,
+    val messageId: String?,
+    /** Номер заявки пришёл в ответе (иначе — тот, что приложение само отправило в запросе). */
+    val messageIdFromResponse: Boolean = true,
+) {
+    /** По справке МТС пустой ErrorCode — успех; «0» тоже считаем успехом. */
+    val accepted: Boolean get() = (errorCode.isBlank() || errorCode == "0") && !messageId.isNullOrBlank()
 }
 
 /** Статус заявки: Completed / InProgress / Faulted. */
@@ -168,13 +175,26 @@ object PersonalDataApi {
         "SubscriberInformation" to linkedMapOf("SubscriberName" to "MobileAPI", "OperatorType" to "MTSBusinessAPI"),
     ))
 
-    fun parseSubmit(body: String): SubmitResult {
+    /**
+     * Разбор ответа на внесение. [sentMessageId] — GUID из SubscriberInformation.MessageId запроса:
+     * если МТС не вернул номер заявки, а ErrorCode пустой, заявка принята под этим номером.
+     */
+    fun parseSubmit(body: String, sentMessageId: String? = null): SubmitResult {
         val j = Json.parseOrNull(body) ?: return SubmitResult("parse", "Ответ МТС не в формате JSON: ${body.take(300)}", null)
         val r = j.field("response")
-        val code = (r.field("ErrorCode") ?: j.field("ErrorCode")).str().orEmpty()
-        val desc = (r.field("ErrorDescription") ?: j.field("ErrorDescription")).str().orEmpty()
-        val id = (j.field("MessageId") ?: r.field("MessageId")).str()
-        return SubmitResult(code, desc, id)
+        val code = (r.field("ErrorCode") ?: j.field("ErrorCode") ?: findKey(j, "ErrorCode")).str().orEmpty()
+        val desc = (r.field("ErrorDescription") ?: j.field("ErrorDescription") ?: findKey(j, "ErrorDescription")).str().orEmpty()
+        val id = (j.field("MessageId") ?: r.field("MessageId") ?: findKey(j, "MessageId") ?: findKey(j, "EventId")).str()?.ifBlank { null }
+        return if (id != null) SubmitResult(code, desc, id)
+        else SubmitResult(code, desc, sentMessageId, messageIdFromResponse = false)
+    }
+
+    /** Первое значение ключа (без учёта регистра) на любой глубине ответа. */
+    private fun findKey(v: Any?, key: String): Any? = when (v) {
+        is Map<*, *> -> v.entries.firstOrNull { (it.key as? String).equals(key, true) && it.value !is Map<*, *> && it.value !is List<*> }?.value
+            ?: v.values.firstNotNullOfOrNull { findKey(it, key) }
+        is List<*> -> v.firstNotNullOfOrNull { findKey(it, key) }
+        else -> null
     }
 
     fun parseResult(body: String, msisdn: String?): OperationResult {

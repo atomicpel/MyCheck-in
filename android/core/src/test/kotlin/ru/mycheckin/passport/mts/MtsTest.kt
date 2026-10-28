@@ -100,6 +100,13 @@ class MtsTest {
         val ok = PersonalDataApi.parseSubmit("""{"response":{"ErrorCode":"","ErrorDescription":""},"MessageId":"abc-1"}""")
         assertTrue(ok.accepted)
         assertEquals("abc-1", ok.messageId)
+        // Как у пользователя: 200, пустой ErrorCode, номера заявки в ответе нет — принято под отправленным GUID.
+        val noId = PersonalDataApi.parseSubmit("""{"response":{"ErrorCode":"","ErrorDescription":""}}""", "sent-guid")
+        assertTrue(noId.accepted)
+        assertEquals("sent-guid", noId.messageId)
+        assertTrue(!noId.messageIdFromResponse)
+        val nested = PersonalDataApi.parseSubmit("""{"response":{"ErrorCode":"","Body":{"messageId":"srv-9"}}}""", "sent")
+        assertEquals("srv-9", nested.messageId)
         val bad = PersonalDataApi.parseSubmit("""{"response":{"ErrorCode":"35","ErrorDescription":"Неверная серия"},"MessageId":"abc-2"}""")
         assertTrue(!bad.accepted)
         assertEquals("Неверная серия", bad.errorDescription)

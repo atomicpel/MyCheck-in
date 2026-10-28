@@ -202,13 +202,14 @@ class MtsClient(
         val msisdn = PersonalDataApi.normalizeMsisdn(phone)
         val problems = PersonalDataApi.problems(p, msisdn, address)
         require(problems.isEmpty()) { problems.joinToString("\n") }
-        val body = PersonalDataApi.changeBody(p, msisdn!!, newMessageId(), address)
+        val messageId = newMessageId()
+        val body = PersonalDataApi.changeBody(p, msisdn!!, messageId, address)
         val r = api(
             "POST", url(PersonalDataApi.CHANGE_PATH),
             mapOf("x-soap-action" to PersonalDataApi.CHANGE_SOAP_ACTION, "X-MTS-MSISDN" to msisdn),
             body,
         )
-        return PersonalDataApi.parseSubmit(r.body)
+        return PersonalDataApi.parseSubmit(r.body, messageId)
     }
 
     /** Статус заявки на внесение данных: Completed / InProgress / Faulted. */
