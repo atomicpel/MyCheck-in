@@ -134,6 +134,7 @@ class SimEditActivity : AppCompatActivity() {
             when (it.itemId) {
                 R.id.action_load_owner -> loadOwner()
                 R.id.action_delete -> askDelete()
+                R.id.action_journal -> openJournal()
             }
             true
         }
@@ -342,6 +343,16 @@ class SimEditActivity : AppCompatActivity() {
         io.execute {
             val outcome = runCatching { record.copy(id = db.save(record)) }
             outcome.onSuccess { r ->
+                val before = saved
+                val changes = if (before == null) emptyList() else SimActions.changedFields(before, r)
+                if (before == null || changes.isNotEmpty()) Journal.event(this, LogLevel.OK, LogCategory.CARD,
+                    if (before == null) "Создана карточка SIM" else "Карточка сохранена",
+                    listOfNotNull(
+                        r.fullName.ifEmpty { null }?.let { "Владелец: $it" },
+                        r.iccid.ifEmpty { null }?.let { "SIM: $it" },
+                        if (changes.isNotEmpty()) "Изменено: " + changes.joinToString() else null,
+                        "Хранится только на этом телефоне; в МТС не отправлялось",
+                    ).joinToString("\n"), msisdn = r.msisdn)
                 // Фото заменили сканом — прежние файлы больше не нужны.
                 saved?.let { old ->
                     if (old.passportPhoto != r.passportPhoto) SimPhotos.delete(old.passportPhoto)
@@ -389,6 +400,9 @@ class SimEditActivity : AppCompatActivity() {
             .setPositiveButton("Удалить") { _, _ ->
                 io.execute {
                     db.delete(s.id); SimPhotos.delete(s.passportPhoto); SimPhotos.delete(s.facePhoto)
+                    Journal.event(this, LogLevel.WARN, LogCategory.CARD, "Карточка удалена",
+                        listOfNotNull(s.fullName.ifEmpty { null }?.let { "Владелец: $it" }, "Удалены паспортные данные и фото на телефоне; в МТС ничего не менялось")
+                            .joinToString("\n"), msisdn = s.msisdn)
                     runOnUiThread { finish() }
                 }
             }
@@ -413,6 +427,20 @@ class SimEditActivity : AppCompatActivity() {
         ) + notesList).joinToString("\n")
         scanNote.setTextColor(ContextCompat.getColor(this, if (ok) R.color.ok else R.color.warn))
         scanNote.visibility = View.VISIBLE
+        val phoneNow = msisdnOf(phone.text.toString()).orEmpty()
+        io.execute {
+            Journal.event(this, if (ok) LogLevel.OK else LogLevel.WARN, LogCategory.SCAN,
+                if (ok) "Паспорт распознан" else "Паспорт распознан с замечаниями",
+                (listOfNotNull(
+                    "Источник: " + when (p.source) { "mrz+viz" -> "MRZ и текст разворота"; "viz" -> "только текст разворота"; else -> "MRZ" },
+                    checks,
+                    listOfNotNull(p.surname, p.name, p.patronymic).joinToString(" ").ifEmpty { null }?.let { "ФИО: $it" },
+                    p.seriesNumber?.let { "Паспорт: $it" },
+                    if (p.corrections.isNotEmpty()) "Исправлено автоматически: " + p.corrections.joinToString("; ") else null,
+                    if (spread != null) "Фото разворота сохранено" else null,
+                    if (face != null) "Фото владельца найдено" else "Лицо на фото не найдено",
+                ) + notesList).joinToString("\n"), msisdn = phoneNow)
+        }
         showPhotos(spread, face, animate = true)
         io.execute {
             val old = sim
@@ -620,8 +648,14 @@ class SimEditActivity : AppCompatActivity() {
         picker.show(supportFragmentManager, title)
     }
 
+    private fun openJournal() {
+        val m = msisdnOf(phone.text.toString())
+        openScreen(Intent(this, JournalActivity::class.java).apply { if (m != null) putExtra(JournalActivity.EXTRA_MSISDN, m) })
+    }
+
     private fun error(title: String, text: String?) {
-        MaterialAlertDialogBuilder(this).setTitle(title).setMessage(text ?: "Неизвестная ошибка").setPositiveButton("OK", null).show()
+        MaterialAlertDialogBuilder(this).setTitle(title).setMessage(text ?: "Неизвестная ошибка").setPositiveButton("OK", null)
+            .setNeutralButton("Журнал") { _, _ -> openJournal() }.show()
     }
 }
 

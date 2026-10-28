@@ -166,6 +166,10 @@ class SettingsActivity : AppCompatActivity() {
             if (login.error != null || password.error != null) return@setOnClickListener
             val a = MtsAccount(existing?.id ?: MtsService.newAccountId(), title.value.trim(), login.value.trim(), password.value.trim())
             MtsService.saveAccount(this, a)
+            Journal.event(this, LogLevel.INFO, LogCategory.SETTINGS,
+                if (existing == null) "Добавлен доступ «${a.title}»" else "Изменён доступ «${a.title}»",
+                "Логин: ${maskLogin(a.login)}" + (if (existing != null && existing.password != a.password) "\nПароль изменён" else "") +
+                    "\nПароль в журнал не записывается", account = a.title)
             dialog.dismiss()
             renderAccounts()
             Toast.makeText(this, "Сохранено. Проверяю подключение…", Toast.LENGTH_SHORT).show()
@@ -182,7 +186,11 @@ class SettingsActivity : AppCompatActivity() {
         MaterialAlertDialogBuilder(this)
             .setTitle("Удалить доступ «${a.title}»?")
             .setMessage("Карточки SIM останутся. Чтобы снова работать с номерами этого контракта, доступ нужно будет добавить заново.")
-            .setPositiveButton("Удалить") { _, _ -> MtsService.deleteAccount(this, a.id); renderAccounts() }
+            .setPositiveButton("Удалить") { _, _ ->
+                MtsService.deleteAccount(this, a.id)
+                Journal.event(this, LogLevel.WARN, LogCategory.SETTINGS, "Удалён доступ «${a.title}»", "Логин: ${maskLogin(a.login)}", account = a.title)
+                renderAccounts()
+            }
             .setNegativeButton("Отмена", null)
             .show()
     }
@@ -193,7 +201,7 @@ class SettingsActivity : AppCompatActivity() {
         status.text = "Проверяю…"
         executor.execute {
             val (ok, msg) = try {
-                MtsService.client(this, a).token(force = true)
+                SimActions.checkAccount(this, a)
                 true to "✓ Логин и пароль приняты, подключение работает"
             } catch (e: Exception) {
                 false to "✕ " + (e.message ?: e.javaClass.simpleName)
@@ -211,6 +219,10 @@ class SettingsActivity : AppCompatActivity() {
         apiBase.error = if (apiBase.value.startsWith("https://")) null else "Только https://"
         if (tokenUrl.error != null || apiBase.error != null) return
         MtsService.saveAddresses(this, tokenUrl.value, apiBase.value.trimEnd('/'))
+        Journal.event(this, LogLevel.INFO, LogCategory.SETTINGS, "Адреса МТС API сохранены",
+            "Токен: ${tokenUrl.value}\nAPI: ${apiBase.value.trimEnd('/')}")
         Toast.makeText(this, "Сохранено", Toast.LENGTH_SHORT).show()
     }
+
+    private fun maskLogin(l: String) = if (l.length > 10) l.take(4) + "…" + l.takeLast(4) else l.take(2) + "…"
 }

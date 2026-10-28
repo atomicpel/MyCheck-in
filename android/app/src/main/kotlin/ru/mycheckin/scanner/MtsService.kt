@@ -124,6 +124,7 @@ object MtsService {
     fun client(context: Context, account: MtsAccount): MtsClient {
         clients[account.id]?.let { return it }
         val config = MtsConfig(account.login, account.password, tokenUrl(context), apiBase(context))
-        return MtsClient(config, limiter(context, account.id)).also { clients[account.id] = it }
+        val app = context.applicationContext
+        return MtsClient(config, limiter(context, account.id), log = { Journal.http(app, it) }).also { clients[account.id] = it }
     }
 }

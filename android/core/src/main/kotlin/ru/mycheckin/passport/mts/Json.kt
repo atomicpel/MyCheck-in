@@ -49,6 +49,42 @@ object Json {
         sb.append('"')
     }
 
+    /** Текст с отступами для журнала; не-JSON возвращается как есть. */
+    fun pretty(text: String): String {
+        val v = parseOrNull(text.trim()) ?: return text
+        if (v !is Map<*, *> && v !is List<*>) return text
+        val sb = StringBuilder()
+        fun pad(n: Int) { repeat(n) { sb.append("  ") } }
+        fun w(x: Any?, d: Int) {
+            when (x) {
+                is Map<*, *> -> {
+                    if (x.isEmpty()) { sb.append("{}"); return }
+                    sb.append("{\n")
+                    x.entries.forEachIndexed { i, (k, y) ->
+                        pad(d + 1); quote(sb, k.toString()); sb.append(": "); w(y, d + 1)
+                        if (i < x.size - 1) sb.append(','); sb.append('\n')
+                    }
+                    pad(d); sb.append('}')
+                }
+                is List<*> -> {
+                    if (x.isEmpty()) { sb.append("[]"); return }
+                    sb.append("[\n")
+                    x.forEachIndexed { i, y ->
+                        pad(d + 1); w(y, d + 1)
+                        if (i < x.size - 1) sb.append(','); sb.append('\n')
+                    }
+                    pad(d); sb.append(']')
+                }
+                is Double -> sb.append(if (x % 1.0 == 0.0 && kotlin.math.abs(x) < 1e15) x.toLong().toString() else x.toString())
+                null -> sb.append("null")
+                is String -> quote(sb, x)
+                else -> sb.append(x.toString())
+            }
+        }
+        w(v, 0)
+        return sb.toString()
+    }
+
     /** Разобрать JSON. Бросает [IllegalArgumentException], если текст не JSON. */
     fun parse(text: String): Any? {
         val p = Parser(text)

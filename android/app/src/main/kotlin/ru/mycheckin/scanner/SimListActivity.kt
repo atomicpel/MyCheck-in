@@ -87,6 +87,7 @@ class SimListActivity : AppCompatActivity() {
         fab = findViewById(R.id.fab)
 
         contractFilter = savedInstanceState?.getString("contract")
+        io.execute { Journal.markInterruptedOnce(this) }
 
         list.layoutManager = LinearLayoutManager(this)
         list.adapter = adapter
@@ -116,6 +117,7 @@ class SimListActivity : AppCompatActivity() {
                 R.id.action_owners -> askLoadOwners()
                 R.id.action_contracts -> renameContracts()
                 R.id.action_settings -> openScreen(Intent(this, SettingsActivity::class.java))
+                R.id.action_journal -> openJournal()
             }
             true
         }
@@ -260,6 +262,7 @@ class SimListActivity : AppCompatActivity() {
                     Snackbar.make(list, msg, Snackbar.LENGTH_LONG).apply {
                         anchorView = fab
                         if (withoutNames > 0) setAction("ФИО из МТС") { askLoadOwners() }
+                        else setAction("Журнал") { openJournal() }
                     }.show()
                 }
                 outcome.onFailure { e -> error("Не удалось загрузить номера", e.message) }
@@ -296,7 +299,8 @@ class SimListActivity : AppCompatActivity() {
             .setAction("Остановить") { cancelBulk.set(true) }.setAnchorView(fab)
         snack.show()
         api.execute {
-            var filled = 0; var failed = 0; var lastError: String? = null
+            var filled = 0; var failed = 0; var lastError: String? = null; var done = 0
+            val started = System.currentTimeMillis()
             for ((i, s) in targets.withIndex()) {
                 if (cancelBulk.get()) break
                 try {
@@ -306,9 +310,18 @@ class SimListActivity : AppCompatActivity() {
                     failed++; lastError = e.message
                     if (e.message?.contains("лимит") == true || e.message?.contains("логин") == true) break
                 }
-                val done = i + 1
-                runOnUiThread { setBusy(true, "Данные владельцев: $done из ${targets.size}", done * 100 / targets.size) }
+                done = i + 1
+                val d = done
+                runOnUiThread { setBusy(true, "Данные владельцев: $d из ${targets.size}", d * 100 / targets.size) }
             }
+            Journal.event(this, when { failed == 0 -> LogLevel.OK; filled > 0 -> LogLevel.WARN; else -> LogLevel.ERROR },
+                LogCategory.OWNER, "Массовая загрузка данных владельцев: $done из ${targets.size}",
+                listOfNotNull(
+                    "Заполнено карточек: $filled, ошибок: $failed",
+                    if (cancelBulk.get()) "Остановлено вручную" else null,
+                    lastError?.let { "Последняя ошибка: $it" },
+                    "Время: ${(System.currentTimeMillis() - started) / 1000} с. Каждый номер — отдельная запись журнала.",
+                ).joinToString("\n"))
             runOnUiThread {
                 if (isDestroyed) return@runOnUiThread
                 snack.dismiss()
@@ -317,7 +330,7 @@ class SimListActivity : AppCompatActivity() {
                 val msg = "Заполнено карточек: $filled" + if (failed > 0) " · ошибок: $failed" else ""
                 Snackbar.make(list, msg, Snackbar.LENGTH_LONG).apply {
                     anchorView = fab
-                    if (lastError != null) setAction("Подробнее") { error("Ошибка МТС", lastError) }
+                    setAction("Журнал") { openJournal() }
                 }.show()
             }
         }
@@ -331,6 +344,12 @@ class SimListActivity : AppCompatActivity() {
         }
         io.execute {
             val intent = SimExport.csv(this, shown, contracts)
+            Journal.event(this, LogLevel.OK, LogCategory.EXPORT, "Выгрузка в Excel (CSV): ${shown.size} SIM",
+                listOfNotNull(
+                    "Контракт: " + (contractFilter?.let { contracts[it]?.title ?: it } ?: "все"),
+                    search.text?.toString()?.takeIf { it.isNotBlank() }?.let { "Поиск: «$it»" },
+                    "Файл: " + intent.getParcelableExtraCompat()?.getStringExtra(Intent.EXTRA_SUBJECT).orEmpty(),
+                ).joinToString("\n"))
             runOnUiThread { startActivity(intent) }
         }
     }
@@ -350,7 +369,13 @@ class SimListActivity : AppCompatActivity() {
                 MaterialAlertDialogBuilder(this)
                     .setTitle("Контракт ${c.id}")
                     .setView(box)
-                    .setPositiveButton("Сохранить") { _, _ -> io.execute { db.renameContract(c.id, input.text.toString()); reload() } }
+                    .setPositiveButton("Сохранить") { _, _ ->
+                        io.execute {
+                            db.renameContract(c.id, input.text.toString())
+                            Journal.event(this, LogLevel.INFO, LogCategory.SETTINGS, "Контракт ${c.id}: название «${input.text.toString().trim()}»")
+                            reload()
+                        }
+                    }
                     .setNegativeButton("Отмена", null)
                     .show()
             }
@@ -367,8 +392,14 @@ class SimListActivity : AppCompatActivity() {
     }
 
     private fun error(title: String, text: String?) {
-        MaterialAlertDialogBuilder(this).setTitle(title).setMessage(text ?: "Неизвестная ошибка").setPositiveButton("OK", null).show()
+        MaterialAlertDialogBuilder(this).setTitle(title).setMessage(text ?: "Неизвестная ошибка").setPositiveButton("OK", null)
+            .setNeutralButton("Журнал") { _, _ -> openJournal() }.show()
     }
+
+    private fun openJournal() = openScreen(Intent(this, JournalActivity::class.java))
+
+    @Suppress("DEPRECATION")
+    private fun Intent.getParcelableExtraCompat(): Intent? = getParcelableExtra(Intent.EXTRA_INTENT)
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 

@@ -223,27 +223,46 @@ class MtsTest {
         assertTrue(Hierarchy.parse("""[{"name":"x","partyRole":[],"hasMore":true}]""").hasMore)
     }
 
-    @Test fun fetchAllPagesWhenHasMore() {
+    private fun page(vararg msisdns: String) = """[{"name":"Org","partyRole":[{"id":"C1","customerAccount":[{"accountNo":"A","productRelationship":[""" +
+        msisdns.joinToString(",") { """{"product":{"productSerialNumber":"$it"}}""" } + "]}]}]}]"
+
+    @Test fun fetchAllPagesEvenWithoutHasMore() {
+        // Как у пользователя: без параметров МТС отдаёт первые 20 номеров и никакого hasMore.
+        val all = (1..45).map { "7900000%04d".format(it) }
+        val urls = mutableListOf<String>()
+        val http = Http { _, url, _, _ ->
+            urls += url
+            val pageNum = Regex("pageNum=(\\d+)").find(url)?.groupValues?.get(1)?.toInt()
+            when {
+                url.endsWith("/token") -> HttpResponse(200, """{"access_token":"t","expires_in":3600}""")
+                url.endsWith("/Service/HierarchyStructure") -> HttpResponse(200, page(*all.take(20).toTypedArray()))
+                pageNum != null -> HttpResponse(200, page(*all.drop((pageNum - 1) * 20).take(20).toTypedArray()))  // МТС режет по 20
+                else -> HttpResponse(404, "")
+            }
+        }
+        val client = MtsClient(MtsConfig("l", "p"), RateLimiter(clock = FakeClock()), http, FakeClock())
+        val got = client.fetchAllNumbers()
+        assertEquals(all, got.numbers.map { it.msisdn })
+        assertTrue(urls.any { it.endsWith("HierarchyStructure?contract=C1&pageNum=3&pageSize=1000") })
+        assertEquals(1 + 1 + 4, urls.size)   // токен + список контрактов + страницы 1, 2, 3 и пустая 4
+    }
+
+    @Test fun fetchFallsBackWhenPageSizeRejected() {
         val urls = mutableListOf<String>()
         val http = Http { _, url, _, _ ->
             urls += url
             when {
                 url.endsWith("/token") -> HttpResponse(200, """{"access_token":"t","expires_in":3600}""")
-                url.endsWith("/Service/HierarchyStructure") ->
-                    HttpResponse(200, """[{"name":"Org","hasMore":true,"partyRole":[{"id":"C1","customerAccount":[{"accountNo":"A","productRelationship":[
-                        {"product":{"productSerialNumber":"79000000001"}}]}]}]}]""")
-                url.contains("pageNum=1") -> HttpResponse(200, """[{"name":"Org","hasMore":true,"partyRole":[{"id":"C1","customerAccount":[{"accountNo":"A","productRelationship":[
-                        {"product":{"productSerialNumber":"79000000001"}},{"product":{"productSerialNumber":"79000000002"}}]}]}]}]""")
-                url.contains("pageNum=2") -> HttpResponse(200, """[{"name":"Org","partyRole":[{"id":"C1","customerAccount":[{"accountNo":"A","productRelationship":[
-                        {"product":{"productSerialNumber":"79000000003"}}]}]}]}]""")
-                else -> HttpResponse(404, "")
+                "pageSize" in url -> HttpResponse(400, """{"fault":{"message":"pageSize too big"}}""")
+                url.endsWith("/Service/HierarchyStructure") -> HttpResponse(200, page("79000000001"))
+                "pageNum=1" in url -> HttpResponse(200, page("79000000001", "79000000002"))
+                "pageNum=2" in url -> HttpResponse(200, page("79000000003"))
+                else -> HttpResponse(200, page())
             }
         }
         val client = MtsClient(MtsConfig("l", "p"), RateLimiter(clock = FakeClock()), http, FakeClock())
-        val all = client.fetchAllNumbers()
-        assertEquals(listOf("79000000001", "79000000002", "79000000003"), all.numbers.map { it.msisdn })
-        assertTrue(urls.any { it.endsWith("HierarchyStructure?contract=C1&pageNum=2&pageSize=1000") })
-        assertEquals(1 + 1 + 2, urls.size)   // токен + общий запрос + 2 страницы
+        assertEquals(listOf("79000000001", "79000000002", "79000000003"), client.fetchAllNumbers().numbers.map { it.msisdn })
+        assertTrue(urls.any { it.endsWith("contract=C1&pageNum=2") })
     }
 
     @Test fun parsesOwnerInfo() {
@@ -267,5 +286,33 @@ class MtsTest {
         assertEquals(RegAddress(region = "Ростовская обл", city = "Ростов-на-Дону", street = "Садовая", house = "5", apartment = "12"), o.address)
         val empty = OwnerInfo.parse("[]")
         assertTrue(!empty.hasPassport && !empty.hasName && empty.confirmation.code == null)
+    }
+
+    @Test fun everyExchangeIsLoggedWithoutSecrets() {
+        val clock = FakeClock()
+        val logged = mutableListOf<HttpExchange>()
+        var n = 0
+        val http = Http { _, url, _, _ ->
+            when {
+                url.endsWith("/token") -> HttpResponse(200, """{"access_token":"SECRET-TOKEN","expires_in":3600}""")
+                n++ == 0 -> HttpResponse(429, "", mapOf("Retry-After" to "1"))
+                else -> throw java.net.SocketTimeoutException("timeout")
+            }
+        }
+        val client = MtsClient(MtsConfig("my-login", "my-password"), RateLimiter(clock = clock), http, clock, log = { logged += it })
+        assertFailsWith<java.net.SocketTimeoutException> { client.ownerInfo("79123456789") }
+        assertEquals(3, logged.size)                                   // токен, 429, таймаут
+        val tok = logged[0]
+        assertEquals(200, tok.code)
+        assertEquals("Basic •••", tok.requestHeaders["Authorization"])
+        assertTrue("SECRET-TOKEN" !in tok.responseBody!!)
+        assertTrue(logged.none { e -> listOf(e.requestHeaders.values.joinToString(), e.requestBody.orEmpty(), e.responseBody.orEmpty())
+            .any { "my-password" in it || "SECRET-TOKEN" in it || "bXktbG9naW4" in it } })
+        assertEquals(429, logged[1].code)
+        assertEquals(1000L, logged[1].retryAfterMs)
+        assertEquals("Bearer •••", logged[1].requestHeaders["Authorization"])
+        assertEquals(null, logged[2].code)
+        assertEquals(2, logged[2].attempt)
+        assertTrue(logged[2].error!!.contains("timeout"))
     }
 }

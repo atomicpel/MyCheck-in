@@ -59,6 +59,40 @@ data class MtsConfig(
 class MtsApiException(message: String, val response: HttpResponse? = null) : Exception(message)
 
 /**
+ * Одно обращение к МТС для журнала: что ушло, куда, что пришло и за сколько.
+ * Пароль и токены сюда не попадают (см. [HttpExchange.mask]).
+ */
+data class HttpExchange(
+    val method: String,
+    val url: String,
+    val requestHeaders: Map<String, String>,
+    val requestBody: String?,
+    val code: Int?,                 // null — ответа нет (нет сети, таймаут)
+    val responseBody: String?,
+    val durationMs: Long,
+    val attempt: Int,
+    val error: String? = null,
+    val retryAfterMs: Long? = null, // МТС попросил подождать (429/503) — ждём столько и повторяем
+) {
+    val ok: Boolean get() = code != null && code in 200..299
+
+    companion object {
+        private val SECRET_JSON = Regex("(\"(?:access_token|refresh_token)\"\\s*:\\s*\")[^\"]*(\")", RegexOption.IGNORE_CASE)
+
+        fun maskHeaders(h: Map<String, String>): Map<String, String> = h.mapValues { (k, v) ->
+            if (k.equals("Authorization", true)) v.substringBefore(' ') + " •••" else v
+        }
+
+        fun maskBody(body: String?): String? = body?.replace(SECRET_JSON, "$1•••$2")
+    }
+}
+
+/** Получатель записей журнала (приложение пишет их в свою базу). */
+fun interface HttpLog {
+    fun record(e: HttpExchange)
+}
+
+/**
  * Клиент МТС Бизнес API. Все вызовы (включая получение токена) проходят через
  * [limiter]; токен кешируется до истечения (живёт 1 час), чтобы не тратить лишние вызовы.
  */
@@ -69,6 +103,7 @@ class MtsClient(
     private val clock: RateLimiter.Clock = RateLimiter.Clock.System,
     private val maxRetries: Int = 3,
     private val newMessageId: () -> String = { UUID.randomUUID().toString() },
+    private val log: HttpLog? = null,
 ) {
     private var token: String? = null
     private var tokenExpiresAt = 0L
@@ -82,10 +117,25 @@ class MtsClient(
         var attempt = 0
         while (true) {
             limiter.acquire()
-            val r = http.request(method, url, headers, body)
-            if ((r.code == 429 || r.code == 503) && attempt < maxRetries) {
+            val started = clock.nowMillis()
+            val startedNs = System.nanoTime()
+            fun took() = maxOf((System.nanoTime() - startedNs) / 1_000_000, clock.nowMillis() - started)
+            val r = try {
+                http.request(method, url, headers, body)
+            } catch (e: Exception) {
+                log?.record(HttpExchange(method, url, HttpExchange.maskHeaders(headers), HttpExchange.maskBody(body),
+                    null, null, took(), attempt + 1, error = e.javaClass.simpleName + ": " + (e.message ?: "")))
+                throw e
+            }
+            val retry = (r.code == 429 || r.code == 503) && attempt < maxRetries
+            val wait = if (retry) {
                 val retryAfter = r.headers.entries.firstOrNull { it.key.equals("Retry-After", true) }?.value?.trim()?.toLongOrNull()
-                clock.sleep((retryAfter?.times(1000)) ?: (1000L shl attempt))
+                (retryAfter?.times(1000)) ?: (1000L shl attempt)
+            } else null
+            log?.record(HttpExchange(method, url, HttpExchange.maskHeaders(headers), HttpExchange.maskBody(body),
+                r.code, HttpExchange.maskBody(r.body), took(), attempt + 1, retryAfterMs = wait))
+            if (wait != null) {
+                clock.sleep(wait)
                 attempt++
                 continue
             }
@@ -195,25 +245,38 @@ class MtsClient(
     }
 
     /**
-     * Все контракты и номера. Сначала один общий запрос; если МТС отметил `hasMore`,
-     * догружаем каждый контракт страницами по 1000 номеров.
+     * Все контракты и номера. Первый запрос без параметров даёт список контрактов (и только первую
+     * страницу номеров — МТС по умолчанию отдаёт около 20). Затем каждый контракт загружается
+     * постранично по [Hierarchy.MAX_PAGE_SIZE], пока МТС отдаёт новые номера — на признак `hasMore`
+     * не полагаемся. Если МТС не принимает размер страницы, повторяем без него (страницы по умолчанию).
      * [progress] получает текст для экрана и число найденных номеров.
      */
     fun fetchAllNumbers(progress: (String, Int) -> Unit = { _, _ -> }): HierarchyPage {
-        progress("Запрашиваю структуру абонента…", 0)
+        progress("Запрашиваю список контрактов…", 0)
         val first = hierarchy()
-        if (!first.hasMore) return first
         val contracts = LinkedHashMap<String, ContractInfo>().apply { first.contracts.forEach { put(it.id, it) } }
         val numbers = LinkedHashMap<String, NumberInfo>().apply { first.numbers.forEach { put(it.msisdn, it) } }
         for ((i, c) in first.contracts.withIndex()) {
+            var pageSize: Int? = Hierarchy.MAX_PAGE_SIZE
             var page = 1
+            // Новизну страницы считаем только среди страниц этого контракта: первая страница
+            // обычно повторяет номера из общего запроса.
+            val seen = HashSet<String>()
             while (page <= MAX_PAGES) {
-                progress("Контракт ${i + 1} из ${first.contracts.size}, страница $page", numbers.size)
-                val p = hierarchy(c.id, page, Hierarchy.MAX_PAGE_SIZE)
+                progress("Контракт ${c.id} (${i + 1} из ${first.contracts.size}), страница $page", numbers.size)
+                val p = try {
+                    hierarchy(c.id, page, pageSize)
+                } catch (e: MtsApiException) {
+                    // МТС не принял pageSize — пробуем страницы по умолчанию, один раз.
+                    if (pageSize == null || page != 1 || e.response?.code !in setOf(400, 422)) throw e
+                    pageSize = null
+                    continue
+                }
                 p.contracts.forEach { contracts.putIfAbsent(it.id, it) }
-                val before = numbers.size
-                p.numbers.forEach { numbers[it.msisdn] = it }
-                if (!p.hasMore || p.numbers.isEmpty() || numbers.size == before) break
+                val before = seen.size
+                p.numbers.forEach { numbers[it.msisdn] = it; seen += it.msisdn }
+                // Конец: пустая страница или в ней не оказалось ни одного нового номера.
+                if (p.numbers.isEmpty() || seen.size == before) break
                 page++
             }
         }

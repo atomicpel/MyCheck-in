@@ -7,6 +7,11 @@
         android:title="Загрузить из МТС"
         app:showAsAction="ifRoom" />
     <item
+        android:id="@+id/action_journal"
+        android:icon="@drawable/ic_history"
+        android:title="Журнал работы"
+        app:showAsAction="ifRoom" />
+    <item
         android:id="@+id/action_export"
         android:icon="@drawable/ic_upload"
         android:title="Выгрузить в Excel"

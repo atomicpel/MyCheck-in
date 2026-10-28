@@ -37,6 +37,11 @@
             android:theme="@style/Theme.Scanner.Camera" />
 
         <activity
+            android:name=".JournalActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustPan" />
+
+        <activity
             android:name=".SettingsActivity"
             android:exported="false"
             android:windowSoftInputMode="adjustResize" />

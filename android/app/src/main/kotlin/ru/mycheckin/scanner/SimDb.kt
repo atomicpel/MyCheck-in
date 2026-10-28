@@ -158,7 +158,12 @@ class SimDb private constructor(context: Context) : SQLiteOpenHelper(context, "s
     }
 
     /** Итог синхронизации с МТС. */
-    data class SyncResult(val added: Int, val updated: Int, val missing: Int, val total: Int)
+    data class SyncResult(
+        val added: Int, val updated: Int, val missing: Int, val total: Int,
+        val addedNumbers: List<String> = emptyList(), val missingNumbers: List<String> = emptyList(),
+        /** У каких номеров сменились ICCID или контракт: номер → «было → стало». */
+        val changes: List<String> = emptyList(),
+    )
 
     /**
      * Применить структуру абонента: новые номера добавляются, у известных обновляются ICCID/контракт/счёт,
@@ -172,6 +177,9 @@ class SimDb private constructor(context: Context) : SQLiteOpenHelper(context, "s
     ): SyncResult {
         val db = writableDatabase
         var added = 0; var updated = 0
+        val addedNumbers = mutableListOf<String>()
+        val changes = mutableListOf<String>()
+        var missingNumbers = emptyList<String>()
         db.beginTransaction()
         try {
             for (c in h.contracts) upsertContract(db, c, accountByContract[c.id].orEmpty(), defaultLabels[c.id].orEmpty())
@@ -183,17 +191,28 @@ class SimDb private constructor(context: Context) : SQLiteOpenHelper(context, "s
                     n.iccid?.let { put("iccid", it) }; n.imsi?.let { put("imsi", it) }
                     put("in_mts", 1)
                 }
+                db.rawQuery("SELECT iccid, contract_id FROM sims WHERE msisdn = ?", arrayOf(n.msisdn)).use { c ->
+                    if (c.moveToFirst()) {
+                        val oldIccid = c.getString(0); val oldContract = c.getString(1)
+                        if (n.iccid != null && oldIccid.isNotEmpty() && oldIccid != n.iccid) changes += "${n.msisdn}: SIM $oldIccid → ${n.iccid}"
+                        if (oldContract.isNotEmpty() && oldContract != n.contractId) changes += "${n.msisdn}: контракт $oldContract → ${n.contractId}"
+                    }
+                }
                 if (db.update("sims", v, "msisdn = ?", arrayOf(n.msisdn)) > 0) updated++
-                else { v.put("msisdn", n.msisdn); v.put("updated_at", System.currentTimeMillis()); db.insertOrThrow("sims", null, v); added++ }
+                else {
+                    v.put("msisdn", n.msisdn); v.put("updated_at", System.currentTimeMillis()); db.insertOrThrow("sims", null, v)
+                    added++; addedNumbers += n.msisdn
+                }
             }
             var missing = 0
             if (markMissing) db.rawQuery("SELECT msisdn FROM sims WHERE in_mts = 1", null).use { c ->
                 val gone = buildList { while (c.moveToNext()) c.getString(0).takeIf { it !in seen }?.let(::add) }
                 for (m in gone) db.update("sims", ContentValues().apply { put("in_mts", 0) }, "msisdn = ?", arrayOf(m))
                 missing = gone.size
+                missingNumbers = gone
             }
             db.setTransactionSuccessful()
-            return SyncResult(added, updated, missing, h.numbers.size)
+            return SyncResult(added, updated, missing, h.numbers.size, addedNumbers, missingNumbers, changes)
         } finally {
             db.endTransaction()
         }
