@@ -24,6 +24,7 @@ import java.util.concurrent.Executors
 class SettingsActivity : AppCompatActivity() {
     private lateinit var ui: Ui
     private lateinit var accountsBox: LinearLayout
+    private lateinit var vaultBox: LinearLayout
     private lateinit var tokenUrl: Ui.Field
     private lateinit var apiBase: Ui.Field
     private val executor = Executors.newSingleThreadExecutor()
@@ -33,6 +34,30 @@ class SettingsActivity : AppCompatActivity() {
         ui = Ui(this)
         val root = ui.column(padTop = 4)
 
+        root.addView(ui.section("Сервер «Учёт SIM»"))
+        root.addView(ui.text(
+            "Свой сервер со сквозным шифрованием: карточки и фото шифруются на телефоне, сервер хранит только " +
+                "зашифрованное. Открывать базу можно с компьютера в браузере.", 13f, secondary = true))
+        vaultBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        root.addView(vaultBox)
+
+        root.addView(ui.section("Защита телефона"))
+        root.addView(switchRow("Вход по отпечатку или коду телефона",
+            "При запуске и через 2 минуты в фоне", AppSecurity.lockEnabled(this)) { on ->
+            if (on && !AppSecurity.canAuthenticate(this)) {
+                Toast.makeText(this, "На телефоне не задана блокировка экрана (PIN, пароль или отпечаток) — сначала включите её в настройках Android", Toast.LENGTH_LONG).show()
+            }
+            AppSecurity.setLockEnabled(this, on)
+            Journal.event(this, if (on) LogLevel.INFO else LogLevel.WARN, LogCategory.SECURITY, if (on) "Вход по отпечатку включён" else "Вход по отпечатку выключен")
+        })
+        root.addView(switchRow("Запрет скриншотов", "Экран не попадёт в скриншоты, запись экрана и список недавних приложений",
+            AppSecurity.screenshotsBlocked(this)) { on ->
+            AppSecurity.setScreenshotsBlocked(this, on)
+            AppSecurity.applyWindowFlags(this)
+            Journal.event(this, if (on) LogLevel.INFO else LogLevel.WARN, LogCategory.SECURITY, if (on) "Скриншоты запрещены" else "Скриншоты разрешены")
+        })
+
+        root.addView(ui.section("МТС Бизнес API"))
         root.addView(ui.text(
             "У каждого контракта МТС свой логин и пароль для интеграции. Где взять: личный кабинет МТС Бизнес → " +
                 "«API для бизнеса» → у пакета запросов нажмите «Логин и пароль для интеграции». " +
@@ -40,7 +65,7 @@ class SettingsActivity : AppCompatActivity() {
             14f, secondary = true,
         ))
 
-        root.addView(ui.section("Доступы к МТС"))
+        root.addView(ui.section("Доступы к МТС").apply { textSize = 15f })
         accountsBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(accountsBox)
         root.addView(ui.button("Добавить доступ (логин и пароль)", filled = true) { editAccount(null) }
@@ -68,7 +93,7 @@ class SettingsActivity : AppCompatActivity() {
         })
 
         val toolbar = MaterialToolbar(this).apply {
-            title = "Настройки МТС"
+            title = "Настройки"
             setNavigationIcon(R.drawable.ic_back)
             setNavigationOnClickListener { finish() }
         }
@@ -80,6 +105,105 @@ class SettingsActivity : AppCompatActivity() {
             addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
         })
         renderAccounts()
+        renderVault()
+    }
+
+    private val vaultListener: () -> Unit = { if (!isDestroyed) renderVault() }
+    override fun onStart() { super.onStart(); VaultSync.addListener(vaultListener) }
+    override fun onStop() { super.onStop(); VaultSync.removeListener(vaultListener) }
+
+    private fun switchRow(title: String, hint: String, checked: Boolean, onChange: (Boolean) -> Unit) = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = android.view.Gravity.CENTER_VERTICAL
+        setPadding(0, ui.px(8), 0, ui.px(4))
+        val texts = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(ui.text(title, 16f))
+            addView(ui.text(hint, 12f, secondary = true))
+        }
+        addView(texts, LinearLayout.LayoutParams(0, -2, 1f))
+        addView(com.google.android.material.materialswitch.MaterialSwitch(context).apply {
+            isChecked = checked
+            setOnCheckedChangeListener { _, on -> onChange(on) }
+        })
+    }
+
+    private fun renderVault() {
+        TransitionManager.beginDelayedTransition(vaultBox)
+        vaultBox.removeAllViews()
+        if (VaultSync.isConnected(this)) {
+            val last = VaultSync.lastSync(this)
+            val err = VaultSync.lastError(this)
+            vaultBox.addView(ui.text("✓ Подключено: " + VaultSync.url(this).removePrefix("https://"), 15f, bold = true)
+                .apply { setTextColor(getColor(R.color.ok)); setPadding(0, ui.px(8), 0, 0) })
+            vaultBox.addView(ui.text(when {
+                VaultSync.running -> "Синхронизация…"
+                last > 0 -> "Последняя синхронизация: " + SimFormat.time(last)
+                else -> "Ещё не синхронизировалось"
+            }, 13f, secondary = true))
+            if (err.isNotEmpty()) vaultBox.addView(ui.text("Ошибка: $err", 13f).apply { setTextColor(getColor(R.color.bad)) })
+            vaultBox.addView(ui.button("Синхронизировать сейчас", filled = true) { VaultSync.syncSoon(this, force = true) }
+                .apply { setIconResource(R.drawable.ic_sync); isEnabled = !VaultSync.running })
+            vaultBox.addView(ui.button("Отключить телефон от сервера") {
+                MaterialAlertDialogBuilder(this)
+                    .setTitle("Отключить от сервера?")
+                    .setMessage("Ключ хранилища будет удалён с телефона. Карточки на телефоне и на сервере останутся. " +
+                        "Чтобы подключиться снова, понадобятся мастер-пароль и код.")
+                    .setPositiveButton("Отключить") { _, _ -> VaultSync.disconnect(this) }
+                    .setNegativeButton("Отмена", null)
+                    .show()
+            })
+        } else {
+            val err = VaultSync.lastError(this)
+            if (err.isNotEmpty()) vaultBox.addView(ui.text(err, 13f).apply { setTextColor(getColor(R.color.bad)); setPadding(0, ui.px(8), 0, 0) })
+            val url = ui.field("Адрес сервера", Ui.Kind.URL).also { vaultBox.addView(it.layout) }
+            url.value = VaultSync.url(this).ifEmpty { "https://sim.atomicpel.cloud-ip.cc" }
+            vaultBox.addView(ui.button("Подключить", filled = true) { connectDialog(url.value) }.apply { setIconResource(R.drawable.ic_sync) })
+        }
+    }
+
+    private fun connectDialog(url: String) {
+        try { ru.mycheckin.passport.vault.VaultApi.normalizeUrl(url) } catch (e: IllegalArgumentException) {
+            Toast.makeText(this, e.message, Toast.LENGTH_LONG).show(); return
+        }
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(ui.px(24), ui.px(4), ui.px(24), 0) }
+        val pw = ui.field("Мастер-пароль", Ui.Kind.PASSWORD).also { box.addView(it.layout) }
+        val code = ui.field("Код из приложения-аутентификатора", Ui.Kind.DIGITS).also { box.addView(it.layout) }
+        val status = ui.text("Мастер-пароль не сохраняется на телефоне и не уходит на сервер.", 12f, secondary = true)
+            .apply { setPadding(0, ui.px(8), 0, 0) }
+        box.addView(status)
+        val dialog = MaterialAlertDialogBuilder(this)
+            .setTitle("Подключение к серверу")
+            .setView(ScrollView(this).apply { addView(box) })
+            .setPositiveButton("Подключить", null)
+            .setNegativeButton("Отмена", null)
+            .show()
+        val ok = dialog.getButton(android.content.DialogInterface.BUTTON_POSITIVE)
+        ok.setOnClickListener {
+            val chars = CharArray(pw.edit.length()).also { pw.edit.text?.getChars(0, it.size, it, 0) }
+            val totp = code.value.filter { it.isDigit() }
+            if (chars.isEmpty()) { pw.error = "Введите мастер-пароль"; return@setOnClickListener }
+            if (totp.length != 6) { code.error = "6 цифр"; chars.fill('\u0000'); return@setOnClickListener }
+            pw.error = null; code.error = null
+            ok.isEnabled = false; dialog.setCancelable(false)
+            status.text = "Проверяю пароль… это займёт несколько секунд"
+            executor.execute {
+                val err = try { VaultSync.connect(this, url, chars, totp); null } catch (e: Exception) { e.message ?: e.javaClass.simpleName }
+                runOnUiThread {
+                    if (isDestroyed) return@runOnUiThread
+                    if (err == null) {
+                        pw.edit.setText(""); dialog.dismiss()
+                        Toast.makeText(this, "Подключено. Отправляю карточки на сервер…", Toast.LENGTH_LONG).show()
+                        VaultSync.syncSoon(this, force = true)
+                        renderVault()
+                    } else {
+                        status.text = err; status.setTextColor(getColor(R.color.bad))
+                        ok.isEnabled = true; dialog.setCancelable(true)
+                        Journal.event(this, LogLevel.ERROR, LogCategory.VAULT, "Не удалось подключиться к серверу", err)
+                    }
+                }
+            }
+        }
     }
 
     override fun finish() {

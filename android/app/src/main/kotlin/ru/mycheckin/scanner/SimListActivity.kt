@@ -191,6 +191,20 @@ class SimListActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         reload()
+        VaultSync.syncSoon(this)
+    }
+
+    /** После синхронизации с сервером — перечитать список (там могли быть правки из веб-версии). */
+    private val vaultListener: () -> Unit = { if (!VaultSync.running && !isDestroyed) reload() }
+
+    override fun onStart() {
+        super.onStart()
+        VaultSync.addListener(vaultListener)
+    }
+
+    override fun onStop() {
+        super.onStop()
+        VaultSync.removeListener(vaultListener)
     }
 
     override fun onDestroy() {
@@ -308,6 +322,7 @@ class SimListActivity : AppCompatActivity() {
                 outcome.onSuccess { report ->
                     val r = report.result
                     reload(animate = true)
+                    VaultSync.syncSoon(this, force = true)
                     if (report.errors.isNotEmpty()) error("Часть доступов не загрузилась", report.errors.joinToString("\n\n"))
                     val msg = buildString {
                         append("Из МТС: ${r.total} номеров")

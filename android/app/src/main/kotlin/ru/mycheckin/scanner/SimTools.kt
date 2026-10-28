@@ -92,6 +92,12 @@ object SimPhotos {
         return f.absolutePath
     }
 
+    fun saveBytes(context: Context, bytes: ByteArray, kind: String): String {
+        val f = File(dir(context), "${kind}_${System.currentTimeMillis()}_${(1000..9999).random()}.jpg")
+        f.writeBytes(bytes)
+        return f.absolutePath
+    }
+
     fun load(path: String, maxSide: Int = 1600): Bitmap? {
         if (path.isBlank() || !File(path).exists()) return null
         val b = BitmapFactory.Options().apply { inJustDecodeBounds = true }

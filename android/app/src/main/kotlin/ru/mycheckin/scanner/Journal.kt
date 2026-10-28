@@ -29,6 +29,8 @@ enum class LogCategory(val label: String) {
     CARD("Карточка"),
     EXPORT("Выгрузка"),
     SETTINGS("Настройки"),
+    VAULT("Сервер"),
+    SECURITY("Безопасность"),
     HTTP("Обращение к МТС"),
     APP("Приложение");
 

@@ -80,4 +80,5 @@ dependencies {
 
     // Зашифрованное хранение ключей МТС API
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+    implementation("androidx.biometric:biometric:1.1.0")                  // вход по отпечатку / PIN
 }

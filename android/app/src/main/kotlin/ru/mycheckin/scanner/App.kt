@@ -5,11 +5,12 @@ import android.content.Context
 import android.os.Build
 import java.io.File
 
-/** Приложение: при старте включает запись аварийных закрытий. */
+/** Приложение: при старте включает запись аварийных закрытий и защиту (блокировка, запрет скриншотов). */
 class App : Application() {
     override fun onCreate() {
         super.onCreate()
         CrashLog.install(this)
+        AppSecurity.install(this)
     }
 }
 

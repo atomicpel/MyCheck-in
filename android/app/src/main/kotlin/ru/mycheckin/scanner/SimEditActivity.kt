@@ -374,6 +374,7 @@ class SimEditActivity : AppCompatActivity() {
         setBusy(true)
         io.execute {
             val outcome = runCatching { record.copy(id = db.save(record)) }
+            outcome.onSuccess { VaultSync.syncSoon(this, force = true) }
             outcome.onSuccess { r ->
                 val before = saved
                 val changes = if (before == null) emptyList() else SimActions.changedFields(before, r)
