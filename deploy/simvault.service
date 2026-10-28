@@ -1,0 +1,56 @@
+[Unit]
+Description=Учёт SIM — зашифрованное хранилище (simvault)
+Documentation=https://github.com/atomicpel/MyCheck-in/blob/claude/russian-passport-scanner-7oykjv/docs/SERVER.md
+After=network.target
+
+[Service]
+Type=simple
+User=simvault
+Group=simvault
+ExecStart=/opt/simvault/simvault serve -data /var/lib/simvault
+Restart=on-failure
+RestartSec=3
+UMask=0077
+
+# Служба видит только свою папку данных; всё остальное — только чтение или скрыто.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/simvault
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProcSubset=pid
+
+# Никаких повышений прав и опасных системных вызовов.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @mount @debug @cpu-emulation @obsolete @raw-io @reboot @swap
+SystemCallErrorNumber=EPERM
+
+# Сеть: только локальные соединения от Caddy. Сервер сам никуда наружу ходить не может —
+# даже при ошибке в коде данные некуда «отправить».
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+# Без дампов памяти.
+LimitCORE=0
+MemoryMax=512M
+TasksMax=128
+
+[Install]
+WantedBy=multi-user.target

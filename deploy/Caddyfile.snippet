@@ -1,0 +1,15 @@
+# Учёт SIM — добавляется в /etc/caddy/Caddyfile скриптом install.sh.
+# Остальные сайты на сервере не затрагиваются. Сертификат Let's Encrypt Caddy получит сам.
+__DOMAIN__ {
+	encode zstd gzip
+	request_body {
+		max_size 6MB
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+	reverse_proxy 127.0.0.1:__PORT__ {
+		header_down -Server
+	}
+}
