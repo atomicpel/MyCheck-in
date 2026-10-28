@@ -9,6 +9,14 @@
         <item name="colorSecondaryContainer">@color/md_secondary_container</item>
         <item name="colorOnSecondaryContainer">@color/md_on_secondary_container</item>
         <item name="colorSurface">@color/md_surface</item>
+        <item name="colorOnSurface">@color/md_on_surface</item>
+        <item name="colorOnSurfaceVariant">@color/md_on_surface_variant</item>
+        <item name="colorOutline">@color/md_outline</item>
+        <item name="colorSurfaceContainerLow">@color/md_surface_container</item>
+        <item name="colorSurfaceContainerHighest">@color/md_surface_container_high</item>
+        <item name="colorTertiary">@color/md_secondary</item>
+        <item name="android:textColorPrimary">@color/md_on_surface</item>
+        <item name="android:textColorSecondary">@color/md_on_surface_variant</item>
         <item name="android:colorBackground">@color/md_surface</item>
         <item name="colorSurfaceContainer">@color/md_surface_container</item>
         <item name="colorSurfaceContainerHigh">@color/md_surface_container_high</item>

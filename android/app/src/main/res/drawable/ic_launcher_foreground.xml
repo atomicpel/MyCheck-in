@@ -1,12 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Обложка паспорта со строками MRZ внизу -->
+<!-- Собственная иконка «Учёт SIM»: белая SIM-карта со срезанным углом и красной галочкой (на фирменном красном фоне) -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="108dp" android:height="108dp"
-    android:viewportWidth="108" android:viewportHeight="108">
-    <path android:fillColor="#FFFFFF"
-        android:pathData="M36,28h36a4,4 0,0 1,4 4v44a4,4 0,0 1,-4 4h-36a4,4 0,0 1,-4 -4v-44a4,4 0,0 1,4 -4z" />
-    <path android:fillColor="#8E2430"
-        android:pathData="M54,36a9,9 0,1 1,0 18a9,9 0,1 1,0 -18z" />
-    <path android:fillColor="#8E2430"
-        android:pathData="M38,64h32v3h-32z M38,70h32v3h-32z" />
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M38,24h23l15,15v41a5,5 0,0 1,-5 5h-33a5,5 0,0 1,-5 -5v-51a5,5 0,0 1,5 -5z" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M43,56l8.5,8.5l16,-17"
+        android:strokeWidth="6.5"
+        android:strokeColor="#FF0032"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
 </vector>

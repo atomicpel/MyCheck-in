@@ -1,20 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="md_primary">#FFB2B7</color>
-    <color name="md_on_primary">#67001B</color>
-    <color name="md_primary_container">#83122A</color>
-    <color name="md_on_primary_container">#FFDADC</color>
-    <color name="md_secondary">#E5BDC0</color>
-    <color name="md_secondary_container">#5C3F42</color>
-    <color name="md_on_secondary_container">#FFD9DC</color>
-    <color name="md_surface">#1A1112</color>
-    <color name="md_surface_container">#271D1E</color>
-    <color name="md_surface_container_high">#322728</color>
-    <color name="md_outline_variant">#524345</color>
+    <!-- Тёмная тема: графит МТС, красный остаётся фирменным -->
+    <color name="md_primary">#FF0032</color>
+    <color name="md_on_primary">#FFFFFF</color>
+    <color name="md_primary_container">#5C0016</color>
+    <color name="md_on_primary_container">#FFD1DA</color>
+    <color name="md_secondary">#969FA8</color>
+    <color name="md_secondary_container">#3A4045</color>
+    <color name="md_on_secondary_container">#FAFAFA</color>
+    <color name="md_surface">#1D2023</color>
+    <color name="md_on_surface">#FAFAFA</color>
+    <color name="md_on_surface_variant">#969FA8</color>
+    <color name="md_surface_container">#25292C</color>
+    <color name="md_surface_container_high">#2E3236</color>
+    <color name="md_outline">#626C77</color>
+    <color name="md_outline_variant">#3A4045</color>
 
-    <color name="ok">#5DB761</color>
-    <color name="waiting">#E3A13A</color>
-    <color name="sent">#7AAEFF</color>
-    <color name="bad">#FF8A80</color>
-    <color name="neutral">#A08F91</color>
+    <color name="ok">#2BAA57</color>
+    <color name="waiting">#D98A1C</color>
+    <color name="sent">#2F86F0</color>
+    <color name="bad">#E5483F</color>
+    <color name="warn">#F06A24</color>
+    <color name="neutral">#7B858F</color>
 </resources>

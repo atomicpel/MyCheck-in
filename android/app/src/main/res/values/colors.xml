@@ -1,26 +1,30 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="brand">#A3283A</color>
-    <color name="launcher_bg">#8E2430</color>
+    <!-- Фирменные цвета в стиле МТС: красный, белый, графит -->
+    <color name="brand">#FF0032</color>
+    <color name="launcher_bg">#FF0032</color>
 
     <!-- Тема: светлая -->
-    <color name="md_primary">#A3283A</color>
+    <color name="md_primary">#FF0032</color>
     <color name="md_on_primary">#FFFFFF</color>
-    <color name="md_primary_container">#FFDADC</color>
-    <color name="md_on_primary_container">#40000D</color>
-    <color name="md_secondary">#765659</color>
-    <color name="md_secondary_container">#FFD9DC</color>
-    <color name="md_on_secondary_container">#2C1517</color>
-    <color name="md_surface">#FFF8F7</color>
-    <color name="md_surface_container">#F7ECEC</color>
-    <color name="md_surface_container_high">#F1E6E6</color>
-    <color name="md_outline_variant">#D8C2C3</color>
+    <color name="md_primary_container">#FFE5EA</color>
+    <color name="md_on_primary_container">#C70028</color>
+    <color name="md_secondary">#626C77</color>
+    <color name="md_secondary_container">#F2F3F7</color>
+    <color name="md_on_secondary_container">#1D2023</color>
+    <color name="md_surface">#FFFFFF</color>
+    <color name="md_on_surface">#1D2023</color>
+    <color name="md_on_surface_variant">#626C77</color>
+    <color name="md_surface_container">#F7F8FA</color>
+    <color name="md_surface_container_high">#F2F3F7</color>
+    <color name="md_outline">#BCC3D0</color>
+    <color name="md_outline_variant">#E2E5EB</color>
 
-    <!-- Статусы SIM -->
-    <color name="ok">#2E7D32</color>
-    <color name="waiting">#B26A00</color>
-    <color name="sent">#1E63C6</color>
-    <color name="bad">#C62828</color>
-    <color name="warn">#E65100</color>
-    <color name="neutral">#7A6E6F</color>
+    <!-- Статусы SIM: белый текст на плашке читается во всех -->
+    <color name="ok">#1D9B48</color>
+    <color name="waiting">#C77700</color>
+    <color name="sent">#0067D0</color>
+    <color name="bad">#D9302B</color>
+    <color name="warn">#E8590C</color>
+    <color name="neutral">#626C77</color>
 </resources>
