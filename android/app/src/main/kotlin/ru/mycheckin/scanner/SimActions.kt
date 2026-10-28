@@ -195,7 +195,7 @@ object SimActions {
                 val st = SimStatus.of(updated)
                 when (st) {
                     SimStatus.PROBLEM -> op.fail("Статус: ${st.label}")
-                    SimStatus.CONFIRMED -> op.ok("Статус: ${st.label}")
+                    SimStatus.CONFIRMED, SimStatus.DONE, SimStatus.IN_MTS -> op.ok("Статус: ${st.label}")
                     else -> op.warn("Статус: ${st.label}")
                 }
                 Checked(updated, lines.joinToString("\n"))

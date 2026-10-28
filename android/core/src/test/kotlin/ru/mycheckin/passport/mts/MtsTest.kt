@@ -308,7 +308,7 @@ class MtsTest {
         }
         val client = MtsClient(MtsConfig("my-login", "my-password"), RateLimiter(clock = clock), http, clock, log = { logged += it })
         assertFailsWith<java.net.SocketTimeoutException> { client.ownerInfo("79123456789") }
-        assertEquals(3, logged.size)                                   // токен, 429, таймаут
+        assertEquals(5, logged.size)                                   // токен, 429, таймаут + 2 повтора по таймауту
         val tok = logged[0]
         assertEquals(200, tok.code)
         assertEquals("Basic •••", tok.requestHeaders["Authorization"])
@@ -321,5 +321,53 @@ class MtsTest {
         assertEquals(null, logged[2].code)
         assertEquals(2, logged[2].attempt)
         assertTrue(logged[2].error!!.contains("timeout"))
+        assertEquals(2000L, logged[2].retryAfterMs)
+        assertEquals(null, logged[4].retryAfterMs)                    // попытки кончились
+    }
+
+    @Test fun ownerInfoAsMtsReallySendsIt() {
+        // Формат реального ответа (данные вымышленные): даты с ".000+0000", серия без пробела, страна словом.
+        val o = OwnerInfo.parse("""[{"placeOfBirth":"ГОР. ТЕСТОВ","gender":"Male","name":"Иванов Пётр Сергеевич","id":"1-AAAA",
+            "identifiedBy":[{"type":"IndividualDocumentIdentification","issuingAuthorityID":"732-001","documentType":"Паспорт гражданина РФ",
+            "issuedBy":"ОВД ТЕСТОВОГО РАЙОНА","documentNo":"123456","issuingCountry":"Россия","documentSeries":"7304",
+            "issuedDate":"2004-07-22T00:00:00.000+0000"}],"partyRole":[{"type":"Customer","externalID":"9-1","id":"1-AAAA"}],
+            "characteristic":[{"name":"PersonalDataConfirmation","value":"Depersonalized"}],"birthDate":"1984-03-21T00:00:00.000+0000"}]""")
+        assertEquals(listOf("Иванов", "Пётр", "Сергеевич"), listOf(o.surname, o.name, o.patronymic))
+        assertEquals(LocalDate.of(2004, 7, 22), o.issueDate)
+        assertEquals(LocalDate.of(1984, 3, 21), o.birthDate)
+        assertEquals("7304", o.series)
+        assertEquals("Depersonalized", o.confirmation.code)
+
+        // Данных нет: имя "null null ", адрес — организации. Ни ФИО, ни адрес не берём.
+        val empty = OwnerInfo.parse("""[{"name":"null null ","id":"1-B","characteristic":[{"name":"PersonalDataConfirmation","value":"Depersonalized"}],
+            "contactMedium":[{"type":"RegisteredAddress","addressType":"RegAddress","address":{"type":"RussianBasicAddress","country":"Россия",
+            "addressObject":{"type":"RussianBasicAddressObject","name":"республика крым","objectType":"District",
+            "addressObject":{"type":"RussianBasicHouseObject","number":"54","apartment":{"type":"RussianBasicApartment","number":"xxx"}}}}}]}]""")
+        assertTrue(!empty.hasName)
+        assertEquals(null, empty.surname)
+        assertEquals(null, empty.address)
+        assertEquals("Depersonalized", empty.confirmation.code)
+    }
+
+    @Test fun networkDropsAreRetriedButSubmitIsNot() {
+        var getCalls = 0; var postCalls = 0
+        val http = Http { method, url, _, _ ->
+            when {
+                url.endsWith("/token") -> HttpResponse(200, """{"access_token":"t","expires_in":3600}""")
+                method == "GET" -> if (getCalls++ < 2) throw java.net.UnknownHostException("api.mts.ru")
+                    else HttpResponse(200, """[{"characteristic":[{"name":"PersonalDataConfirmation","value":"Activated"}]}]""")
+                else -> { postCalls++; throw java.net.SocketTimeoutException("Read timed out") }
+            }
+        }
+        val clock = FakeClock()
+        val client = MtsClient(MtsConfig("l", "p"), RateLimiter(clock = clock), http, clock)
+        assertTrue(client.confirmationStatus("79123456789").confirmed)   // 2 обрыва, 3-я попытка успешна
+        assertEquals(3, getCalls)
+        assertTrue(7000L <= clock.sleeps.sum())
+        val p = Mrz.build("Иванов", "Иван", "Иванович", "4601", "123456", 'M',
+            LocalDate.of(1990, 3, 15), LocalDate.of(2010, 6, 20), "770-120").let { (a, b) ->
+            Mrz.parse(a, b, LocalDate.of(2026, 10, 27)).apply { issuedBy = "ОВД"; birthPlace = "Г. МОСКВА" } }
+        assertFailsWith<java.net.SocketTimeoutException> { client.submitPersonalData(p, "79123456789") }
+        assertEquals(1, postCalls)                                         // внесение не повторяется
     }
 }

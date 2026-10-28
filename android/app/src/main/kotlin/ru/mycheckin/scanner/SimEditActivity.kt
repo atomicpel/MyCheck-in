@@ -497,7 +497,7 @@ class SimEditActivity : AppCompatActivity() {
         statusCard.strokeColor = color
         statusIcon.imageTintList = ColorStateList.valueOf(color)
         statusIcon.setImageResource(when (st) {
-            SimStatus.CONFIRMED -> R.drawable.ic_check
+            SimStatus.CONFIRMED, SimStatus.DONE, SimStatus.IN_MTS -> R.drawable.ic_check
             SimStatus.SENT, SimStatus.WAITING -> R.drawable.ic_send
             SimStatus.PROBLEM -> R.drawable.ic_close
             else -> R.drawable.ic_badge
@@ -508,6 +508,9 @@ class SimEditActivity : AppCompatActivity() {
             when (st) {
                 SimStatus.NO_PASSPORT -> add("Отсканируйте паспорт владельца или введите данные вручную, затем нажмите «Внести в МТС».")
                 SimStatus.READY -> add("Паспорт заполнен, в МТС ещё не отправлялся.")
+                SimStatus.NEEDED -> add("В МТС нет данных пользователя этого номера — их нужно внести.")
+                SimStatus.IN_MTS -> add("Данные пользователя уже есть в МТС (загружены оттуда). Вносить заново не нужно, если они верны.")
+                SimStatus.DONE -> add("МТС выполнил заявку: данные внесены.")
                 else -> Unit
             }
             if (s.messageId.isNotEmpty()) {

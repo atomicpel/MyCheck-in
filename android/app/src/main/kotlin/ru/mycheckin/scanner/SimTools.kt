@@ -14,20 +14,29 @@ import java.util.Locale
 /** Краткий статус SIM для карточки: текст и цвет. */
 enum class SimStatus(val label: String, val color: Int) {
     CONFIRMED("Подтверждено", R.color.ok),
+    DONE("Внесено", R.color.ok),
     WAITING("Ждёт Госуслуг", R.color.waiting),
     SENT("Отправлено", R.color.sent),
     PROBLEM("Есть проблема", R.color.bad),
+    IN_MTS("Есть в МТС", R.color.sent),
+    NEEDED("Нужно внести", R.color.warn),
     READY("Не отправлено", R.color.neutral),
     NO_PASSPORT("Нет паспорта", R.color.neutral);
 
     companion object {
         private val PROBLEMS = setOf("MismatchOfData", "NotFoundInEsia", "Refusal", "RequestNotFoundInEsia")
+        /** В МТС нет данных пользователя — их нужно внести. */
+        private val NEED_DATA = setOf("Anonymous", "Migration", "ActivatedPortIn")
 
         fun of(s: SimRecord): SimStatus = when {
             s.confirmation == "Activated" || s.confirmation == "NotRequired" -> CONFIRMED
             s.opStatus == "Faulted" || s.confirmation in PROBLEMS -> PROBLEM
             s.confirmation == "WaitingForAcceptance" || s.confirmation == "WaitingForCheck" -> WAITING
+            s.messageId.isNotEmpty() && s.opStatus == "Completed" -> DONE
             s.messageId.isNotEmpty() -> SENT
+            // Depersonalized (44-ФЗ / 223-ФЗ): если МТС прислал паспорт — данные в МТС уже есть.
+            s.confirmation == "Depersonalized" && s.hasPassport && s.fullName.isNotEmpty() -> IN_MTS
+            s.confirmation in NEED_DATA || s.confirmation == "Depersonalized" -> NEEDED
             s.hasPassport -> READY
             else -> NO_PASSPORT
         }

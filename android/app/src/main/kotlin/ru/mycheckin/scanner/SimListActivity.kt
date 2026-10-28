@@ -290,9 +290,15 @@ class SimListActivity : AppCompatActivity() {
     private fun askLoadOwners() {
         if (busy) return
         if (!MtsService.hasAccounts(this)) { askSettings(); return }
-        val targets = all.filter { it.inMts && (!it.hasPassport || it.fullName.isEmpty()) }
+        val lacking = all.filter { it.inMts && (!it.hasPassport || it.fullName.isEmpty()) }
+        // Номера, по которым МТС уже ответил «данных нет» за последние сутки, не запрашиваем повторно — экономим вызовы.
+        val dayAgo = System.currentTimeMillis() - 24 * 3600 * 1000L
+        val targets = lacking.filter { it.checkedAt < dayAgo || it.confirmation.isEmpty() }
+        val skipped = lacking.size - targets.size
         if (targets.isEmpty()) {
-            Snackbar.make(list, "У всех номеров из МТС уже есть ФИО и паспорт", Snackbar.LENGTH_SHORT).setAnchorView(fab).show()
+            val text = if (lacking.isEmpty()) "У всех номеров из МТС уже есть ФИО и паспорт"
+            else "По $skipped номерам МТС сегодня уже ответил, что данных нет — их нужно внести"
+            Snackbar.make(list, text, Snackbar.LENGTH_LONG).setAnchorView(fab).show()
             return
         }
         val minutes = (targets.size / 280) + 1
@@ -301,7 +307,8 @@ class SimListActivity : AppCompatActivity() {
             .setMessage(
                 "Для ${targets.size} ${plural(targets.size, "номера", "номеров", "номеров")} нет ФИО или паспорта. " +
                     "Запросить то, что уже внесено в МТС, и статус подтверждения на Госуслугах?\n\n" +
-                    "Это ${targets.size} вызовов API, около $minutes мин. Заполняются только пустые поля.",
+                    "Это ${targets.size} вызовов API, около $minutes мин. Заполняются только пустые поля." +
+                    if (skipped > 0) "\n\nПропущено $skipped номеров: МТС за последние сутки уже ответил, что данных нет." else "",
             )
             .setPositiveButton("Загрузить") { _, _ -> loadOwners(targets) }
             .setNegativeButton("Отмена", null)
@@ -316,6 +323,7 @@ class SimListActivity : AppCompatActivity() {
         snack.show()
         api.execute {
             var filled = 0; var failed = 0; var lastError: String? = null; var done = 0
+            val failedSims = mutableListOf<SimRecord>()
             val started = System.currentTimeMillis()
             for ((i, s) in targets.withIndex()) {
                 if (cancelBulk.get()) break
@@ -323,11 +331,11 @@ class SimListActivity : AppCompatActivity() {
                     val u = SimActions.loadOwner(this, s)
                     if (u.fullName.isNotEmpty() && s.fullName.isEmpty() || u.hasPassport && !s.hasPassport) filled++
                 } catch (e: SimActions.Failure) {
-                    failed++; lastError = e.message
+                    failed++; lastError = e.message; failedSims += s
                     if (e.message?.contains("лимит") == true || e.message?.contains("логин") == true) break
                 } catch (e: Exception) {
                     // Непредвиденная ошибка по одному номеру не должна останавливать загрузку и ронять приложение.
-                    failed++; lastError = "${e.javaClass.simpleName}: ${e.message}"
+                    failed++; lastError = "${e.javaClass.simpleName}: ${e.message}"; failedSims += s
                     runCatching {
                         Journal.event(this, LogLevel.ERROR, LogCategory.OWNER, "Сбой при загрузке данных владельца",
                             android.util.Log.getStackTraceString(e).take(4000), msisdn = s.msisdn)
@@ -351,9 +359,11 @@ class SimListActivity : AppCompatActivity() {
                 setBusy(false)
                 reload()
                 val msg = "Заполнено карточек: $filled" + if (failed > 0) " · ошибок: $failed" else ""
-                Snackbar.make(list, msg, Snackbar.LENGTH_LONG).apply {
+                Snackbar.make(list, msg, if (failedSims.isEmpty()) Snackbar.LENGTH_LONG else Snackbar.LENGTH_INDEFINITE).apply {
                     anchorView = fab
-                    setAction("Журнал") { openJournal() }
+                    // Ошибки чаще всего — обрывы связи: предлагаем повторить только эти номера.
+                    if (failedSims.isNotEmpty()) setAction("Повторить (${failedSims.size})") { loadOwners(failedSims.toList()) }
+                    else setAction("Журнал") { openJournal() }
                 }.show()
             }
         }

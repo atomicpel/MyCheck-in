@@ -112,9 +112,14 @@ class MtsClient(
         require(url.startsWith("https://")) { "Адрес должен начинаться с https://: $url" }
     }
 
-    /** Вызов с учётом лимитов; при 429/503 — повтор с паузой (Retry-After или 1-2-4 с). */
-    private fun call(method: String, url: String, headers: Map<String, String>, body: String?): HttpResponse {
+    /**
+     * Вызов с учётом лимитов; при 429/503 — повтор с паузой (Retry-After или 1-2-4 с).
+     * [safeToRepeat] — запрос можно повторить при обрыве связи (чтение, статус, токен): до 2 повторов
+     * через 2 и 5 с. Внесение данных не повторяется — иначе при обрыве после приёма МТС уйдёт дважды.
+     */
+    private fun call(method: String, url: String, headers: Map<String, String>, body: String?, safeToRepeat: Boolean = false): HttpResponse {
         var attempt = 0
+        var networkRetries = 0
         while (true) {
             limiter.acquire()
             val started = clock.nowMillis()
@@ -123,9 +128,14 @@ class MtsClient(
             val r = try {
                 http.request(method, url, headers, body)
             } catch (e: Exception) {
+                val retry = safeToRepeat && e is java.io.IOException && networkRetries < NETWORK_RETRY_MS.size
                 log?.record(HttpExchange(method, url, HttpExchange.maskHeaders(headers), HttpExchange.maskBody(body),
-                    null, null, took(), attempt + 1, error = e.javaClass.simpleName + ": " + (e.message ?: "")))
-                throw e
+                    null, null, took(), attempt + networkRetries + 1, error = e.javaClass.simpleName + ": " + (e.message ?: ""),
+                    retryAfterMs = if (retry) NETWORK_RETRY_MS[networkRetries] else null))
+                if (!retry) throw e
+                clock.sleep(NETWORK_RETRY_MS[networkRetries])
+                networkRetries++
+                continue
             }
             val retry = (r.code == 429 || r.code == 503) && attempt < maxRetries
             val wait = if (retry) {
@@ -133,7 +143,7 @@ class MtsClient(
                 (retryAfter?.times(1000)) ?: (1000L shl attempt)
             } else null
             log?.record(HttpExchange(method, url, HttpExchange.maskHeaders(headers), HttpExchange.maskBody(body),
-                r.code, HttpExchange.maskBody(r.body), took(), attempt + 1, retryAfterMs = wait))
+                r.code, HttpExchange.maskBody(r.body), took(), attempt + networkRetries + 1, retryAfterMs = wait))
             if (wait != null) {
                 clock.sleep(wait)
                 attempt++
@@ -158,6 +168,7 @@ class MtsClient(
                 "Accept" to "application/json",
             ),
             "grant_type=client_credentials",
+            safeToRepeat = true,
         )
         if (r.code == 400 || r.code == 401) {
             throw MtsApiException("МТС не принял логин и пароль для интеграции (HTTP ${r.code}). Проверьте их в ЛК МТС Бизнес → API для бизнеса.", r)
@@ -173,7 +184,7 @@ class MtsClient(
     }
 
     /** Авторизованный вызов метода API. При 401 токен обновляется и запрос повторяется один раз. */
-    private fun api(method: String, url: String, extraHeaders: Map<String, String>, body: String?): HttpResponse {
+    private fun api(method: String, url: String, extraHeaders: Map<String, String>, body: String?, safeToRepeat: Boolean = method == "GET"): HttpResponse {
         requireHttps(url)
         fun send(t: String) = call(
             method, url,
@@ -183,6 +194,7 @@ class MtsClient(
                 "Accept" to "application/json",
             ) + extraHeaders,
             body,
+            safeToRepeat,
         )
         var r = send(token())
         if (r.code == 401) r = send(token(force = true))
@@ -219,6 +231,7 @@ class MtsClient(
             "POST", url(PersonalDataApi.RESULT_PATH),
             mapOf("x-soap-action" to PersonalDataApi.RESULT_SOAP_ACTION, "X-MTS-MSISDN" to msisdn),
             PersonalDataApi.resultBody(messageId),
+            safeToRepeat = true,   // только чтение статуса
         )
         return PersonalDataApi.parseResult(r.body, msisdn)
     }
@@ -287,5 +300,8 @@ class MtsClient(
     companion object {
         /** Защита от бесконечной загрузки: 200 страниц × 1000 = 200 000 номеров на контракт. */
         const val MAX_PAGES = 200
+
+        /** Паузы перед повтором при обрыве связи (только для безопасных запросов). */
+        val NETWORK_RETRY_MS = longArrayOf(2_000, 5_000)
     }
 }

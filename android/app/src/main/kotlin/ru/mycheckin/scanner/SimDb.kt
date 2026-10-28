@@ -82,7 +82,7 @@ data class SimRecord(
  * Учёт SIM-карт на телефоне (SQLite в закрытой папке приложения, резервное копирование выключено).
  * Данные из МТС (номер, ICCID, контракт) при синхронизации обновляются, введённое вручную сохраняется.
  */
-class SimDb private constructor(context: Context) : SQLiteOpenHelper(context, "sims.db", null, 1) {
+class SimDb private constructor(context: Context) : SQLiteOpenHelper(context, "sims.db", null, 2) {
 
     companion object {
         @Volatile private var instance: SimDb? = null
@@ -116,7 +116,15 @@ class SimDb private constructor(context: Context) : SQLiteOpenHelper(context, "s
         db.execSQL("CREATE INDEX sims_contract ON sims(contract_id)")
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 2) {
+            // Сборки 8–14 записывали заглушки МТС («null null») как ФИО — очищаем.
+            for (col in listOf("surname", "name", "patronymic", "birth_place", "issued_by",
+                "addr_region", "addr_city", "addr_street", "addr_house", "addr_apartment")) {
+                db.execSQL("UPDATE sims SET $col = '' WHERE lower(trim($col)) IN ('null', 'null null', 'xxx')")
+            }
+        }
+    }
 
     // ---- Контракты ----
 

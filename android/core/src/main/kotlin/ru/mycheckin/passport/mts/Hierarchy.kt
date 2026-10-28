@@ -103,7 +103,8 @@ data class OwnerInfo(
             val person = ((j as? List<*>)?.firstOrNull() ?: j)
             val confirmation = person.field("characteristic").list()
                 .firstOrNull { it.field("name").str() == "PersonalDataConfirmation" }.field("value").str()
-            val parts = person.field("name").str()?.trim()?.split(Regex("\\s+"))?.filter { it.isNotEmpty() }.orEmpty()
+            // Где данных нет, МТС присылает имя строкой "null null " — такие слова отбрасываем.
+            val parts = person.field("name").str()?.trim()?.split(Regex("\\s+"))?.filter { clean(it) != null }.orEmpty()
             val doc = person.field("identifiedBy").list().firstOrNull()
             val series = doc.field("documentSeries").str()?.filter { it.isDigit() }?.ifEmpty { null }
             val number = doc.field("documentNo").str()?.filter { it.isDigit() }?.ifEmpty { null }
@@ -114,15 +115,21 @@ data class OwnerInfo(
                 patronymic = parts.drop(2).joinToString(" ").ifEmpty { null },
                 sex = parseSex(person.field("gender").str()),
                 birthDate = parseDate(person.field("birthDate").str()),
-                birthPlace = person.field("placeOfBirth").str()?.trim()?.ifEmpty { null },
+                birthPlace = clean(person.field("placeOfBirth").str()),
                 series = series,
                 number = number,
                 issueDate = parseDate(doc.field("issuedDate").str()),
-                issuedBy = doc.field("issuedBy").str()?.trim()?.ifEmpty { null },
+                issuedBy = clean(doc.field("issuedBy").str()),
                 divisionCode = doc.field("issuingAuthorityID").str()?.filter { it.isDigit() }
                     ?.takeIf { it.length == 6 }?.let { "${it.take(3)}-${it.drop(3)}" },
-                address = parseAddress(person.field("contactMedium").list()),
+                // Без ФИО адрес в МТС — обычно адрес организации по контракту, не владельца номера.
+                address = if (parts.isNotEmpty()) parseAddress(person.field("contactMedium").list()) else null,
             )
+        }
+
+        /** Пустые значения-заглушки МТС: "", "null", "xxx". */
+        fun clean(s: String?): String? = s?.trim()?.takeUnless {
+            it.isEmpty() || it.equals("null", true) || it.equals("null null", true) || it.all { c -> c == 'x' || c == 'X' || c == 'х' || c == 'Х' }
         }
 
         private fun parseSex(s: String?): Char? = when (s?.trim()?.lowercase()) {
@@ -152,14 +159,14 @@ data class OwnerInfo(
             var node: Any? = reg.field("address").field("addressObject")
             var guard = 0
             while (node != null && guard++ < 12) {
-                val name = node.field("name").str().orEmpty()
+                val name = clean(node.field("name").str()).orEmpty()
                 when (node.field("objectType").str()) {
                     "District" -> region = name
                     "City" -> city = name
                     "Street" -> street = name
                 }
-                if (node.field("type").str() == "RussianBasicHouseObject") house = node.field("number").str().orEmpty()
-                node.field("apartment").field("number").str()?.let { apartment = it }
+                if (node.field("type").str() == "RussianBasicHouseObject") house = clean(node.field("number").str()).orEmpty()
+                clean(node.field("apartment").field("number").str())?.let { apartment = it }
                 node = node.field("addressObject")
             }
             return RegAddress(region = region, city = city, street = street, house = house, apartment = apartment)
