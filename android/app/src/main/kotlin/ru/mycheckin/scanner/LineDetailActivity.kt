@@ -120,7 +120,7 @@ class LineDetailActivity : AppCompatActivity() {
             val snapshot = LineStore.get(this).snapshot(msisdn, s?.accountNo.orEmpty())
             val reqs = LineStore.get(this).requests(msisdn, 30)
             runOnUiThread {
-                if (isDestroyed) return@mtsOnUiThread
+                if (isDestroyed) return@runOnUiThread
                 sim = s; snap = snapshot; requests = reqs
                 render()
                 // Сведений нет совсем — сразу запрашиваем.
@@ -141,7 +141,7 @@ class LineDetailActivity : AppCompatActivity() {
         work.execute {
             val r = runCatching(block)
             runOnUiThread {
-                if (isDestroyed) return@mtsOnUiThread
+                if (isDestroyed) return@runOnUiThread
                 busy--
                 if (busy == 0) progress.visibility = View.INVISIBLE
                 updateSubtitle()
