@@ -192,6 +192,9 @@ class LineDetailActivity : AppCompatActivity() {
                 text = e; textSize = 12f; setTextColor(v.color(R.color.warn)); setPadding(0, v.px(6), 0, 0)
             })
         }
+        sections.filter { it in s.unavailable }.forEach { sec ->
+            box.addView(v.hint("${sec.title}: МТС не даёт эти сведения для номера").apply { setPadding(0, v.px(6), 0, 0) })
+        }
         if (actions.isNotEmpty()) {
             val g = ChipGroup(this).apply { chipSpacingHorizontal = v.px(6); setPadding(0, v.px(8), 0, 0) }
             actions.forEach { (t, f) -> g.addView(v.chip(t, checkable = false).apply { setOnClickListener { f() } }) }

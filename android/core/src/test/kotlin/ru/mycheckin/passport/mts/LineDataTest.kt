@@ -63,6 +63,10 @@ class LineDataTest {
         assertEquals("МТС ответил HTTP 500", s.errors[LineSection.FORWARDING])
         assertTrue(s.isEsim)
         assertTrue(s.voluntaryBlock)
+        // Раздел недоступен для номера (4xx) — не ошибка: значка «Ошибки» не будет.
+        val u = snapshot(mapOf(LineSection.BUDGET to StoredSection(null, now, "HTTP 404: правил нет", unavailable = true)))
+        assertTrue(u.errors.isEmpty())
+        assertEquals("HTTP 404: правил нет", u.unavailable[LineSection.BUDGET])
     }
 
     @Test fun balanceStates() {

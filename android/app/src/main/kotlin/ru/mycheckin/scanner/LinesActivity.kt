@@ -80,6 +80,7 @@ class LinesActivity : AppCompatActivity() {
     private var wasRunning = false
     private var lastReload = 0L
     private var loading = false
+    private var hasAccess = false
 
     private val header = SummaryAdapter()
     private val adapter = LineAdapter()
@@ -154,6 +155,7 @@ class LinesActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        hasAccess = MtsService.hasAccounts(this)
         reload()
         // Первый запуск: сведений ещё нет — сразу загружаем в фоне.
         if (LinePrefs.lastRun(this) == 0L && MtsService.hasAccounts(this) && !LineSync.state.running) LineSync.refreshNow(this)
@@ -224,7 +226,7 @@ class LinesActivity : AppCompatActivity() {
         val text = findViewById<TextView>(R.id.empty_text)
         val action = findViewById<MaterialButton>(R.id.empty_action)
         when {
-            !MtsService.hasAccounts(this) -> {
+            !hasAccess -> {
                 title.text = "Нужен доступ к МТС"
                 text.text = "Введите логин и пароль для интеграции из личного кабинета МТС Бизнес (раздел «API для бизнеса»)."
                 action.text = "Открыть настройки"

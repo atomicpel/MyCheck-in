@@ -60,8 +60,11 @@ enum class LineChange(val title: String) {
     companion object { fun of(name: String?) = entries.firstOrNull { it.name == name } }
 }
 
-/** Сохранённый раздел: тело ответа МТС (или null, если запрос не удался) и когда он получен. */
-data class StoredSection(val body: String?, val fetchedAt: Long, val error: String? = null)
+/**
+ * Сохранённый раздел: тело ответа МТС (или null, если запрос не удался) и когда он получен.
+ * [unavailable] — МТС ответил, что раздел для номера недоступен (не подключено, нет прав): это не сбой.
+ */
+data class StoredSection(val body: String?, val fetchedAt: Long, val error: String? = null, val unavailable: Boolean = false)
 
 // ---------------------------------------------------------------------------------------------
 // Сводка по номеру
@@ -95,6 +98,8 @@ data class LineSnapshot(
     val simType: String? = null,
     val fetchedAt: Map<LineSection, Long> = emptyMap(),
     val errors: Map<LineSection, String> = emptyMap(),
+    /** Разделы, недоступные для номера, с ответом МТС. */
+    val unavailable: Map<LineSection, String> = emptyMap(),
 ) {
     val loaded: Boolean get() = fetchedAt.isNotEmpty()
     val updatedAt: Long? get() = fetchedAt.values.maxOrNull()
@@ -155,9 +160,10 @@ data class LineSnapshot(
         fun build(msisdn: String, accountNo: String, number: Map<LineSection, StoredSection>, account: Map<LineSection, StoredSection>): LineSnapshot {
             val all = account.filterKeys { it.byAccount } + number.filterKeys { !it.byAccount }
             val errors = LinkedHashMap<LineSection, String>()
+            val unavailable = LinkedHashMap<LineSection, String>()
             fun <T> parse(s: LineSection, f: (String) -> T): T? {
                 val st = all[s] ?: return null
-                st.error?.let { errors[s] = it }
+                st.error?.let { if (st.unavailable) unavailable[s] = it else errors[s] = it }
                 val body = st.body ?: return null
                 return runCatching { f(body) }.onFailure { errors[s] = "Не удалось разобрать ответ МТС: ${it.message}" }.getOrNull()
             }
@@ -182,6 +188,7 @@ data class LineSnapshot(
                 simType = parse(LineSection.SIM_TYPE) { LineParse.simType(it) },
                 fetchedAt = all.mapValues { it.value.fetchedAt },
                 errors = errors,
+                unavailable = unavailable,
             )
         }
     }

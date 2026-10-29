@@ -50,7 +50,7 @@ data class LineRequest(
  * Сведения о номерах из МТС на телефоне (SQLite в закрытой папке приложения, без резервного копирования).
  * Отдельная база от учёта SIM: это кеш, который всегда можно получить из МТС заново, на сервер он не уходит.
  */
-class LineStore private constructor(context: Context) : SQLiteOpenHelper(context, "lines.db", null, 1) {
+class LineStore private constructor(context: Context) : SQLiteOpenHelper(context, "lines.db", null, 2) {
 
     companion object {
         @Volatile private var instance: LineStore? = null
@@ -66,6 +66,7 @@ class LineStore private constructor(context: Context) : SQLiteOpenHelper(context
         db.execSQL("""
             CREATE TABLE sections (
               key TEXT NOT NULL, section TEXT NOT NULL, body TEXT, fetched_at INTEGER NOT NULL DEFAULT 0, error TEXT,
+              unavailable INTEGER NOT NULL DEFAULT 0,
               PRIMARY KEY (key, section)
             )""")
         db.execSQL("""
@@ -78,7 +79,14 @@ class LineStore private constructor(context: Context) : SQLiteOpenHelper(context
         db.execSQL("CREATE INDEX requests_msisdn ON requests(msisdn)")
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        // v2: признак «недоступно для номера». Это кеш — проще пересоздать, сведения загрузятся заново.
+        if (oldVersion < 2) {
+            db.execSQL("DROP TABLE IF EXISTS sections")
+            db.execSQL("DROP TABLE IF EXISTS requests")
+            onCreate(db)
+        }
+    }
 
     // ---- Разделы ----
 
@@ -97,7 +105,7 @@ class LineStore private constructor(context: Context) : SQLiteOpenHelper(context
     /** Сохранить ответ МТС. */
     fun put(section: LineSection, key: String, body: String, at: Long = System.currentTimeMillis()) {
         writableDatabase.insertWithOnConflict("sections", null, ContentValues().apply {
-            put("key", key); put("section", section.name); put("body", compact(body)); put("fetched_at", at); putNull("error")
+            put("key", key); put("section", section.name); put("body", compact(body)); put("fetched_at", at); putNull("error"); put("unavailable", 0)
         }, SQLiteDatabase.CONFLICT_REPLACE)
     }
 
@@ -121,10 +129,11 @@ class LineStore private constructor(context: Context) : SQLiteOpenHelper(context
         val db = writableDatabase
         val updated = db.update("sections", ContentValues().apply {
             put("error", error.take(500))
+            put("unavailable", if (final) 1 else 0)
             if (final) { putNull("body"); put("fetched_at", at) }
         }, "key = ? AND section = ?", arrayOf(key, section.name))
         if (updated == 0) db.insert("sections", null, ContentValues().apply {
-            put("key", key); put("section", section.name); putNull("body"); put("error", error.take(500))
+            put("key", key); put("section", section.name); putNull("body"); put("error", error.take(500)); put("unavailable", if (final) 1 else 0)
             put("fetched_at", if (final) at else 0L)
         })
     }
@@ -144,11 +153,11 @@ class LineStore private constructor(context: Context) : SQLiteOpenHelper(context
     }
 
     fun sections(key: String): Map<LineSection, StoredSection> =
-        readableDatabase.rawQuery("SELECT section, body, fetched_at, error FROM sections WHERE key = ?", arrayOf(key)).use { c ->
+        readableDatabase.rawQuery("SELECT section, body, fetched_at, error, unavailable FROM sections WHERE key = ?", arrayOf(key)).use { c ->
             buildMap {
                 while (c.moveToNext()) {
                     val s = LineSection.of(c.getString(0)) ?: continue
-                    put(s, StoredSection(if (c.isNull(1)) null else c.getString(1), c.getLong(2), if (c.isNull(3)) null else c.getString(3)))
+                    put(s, StoredSection(if (c.isNull(1)) null else c.getString(1), c.getLong(2), if (c.isNull(3)) null else c.getString(3), c.getInt(4) == 1))
                 }
             }
         }
@@ -168,14 +177,14 @@ class LineStore private constructor(context: Context) : SQLiteOpenHelper(context
         val numbers = sims.map { it.msisdn }.toSet()
 
         val byNumber = HashMap<String, MutableMap<LineSection, StoredSection>>()
-        readableDatabase.rawQuery("SELECT key, section, body, fetched_at, error FROM sections ORDER BY key", null).use { c ->
+        readableDatabase.rawQuery("SELECT key, section, body, fetched_at, error, unavailable FROM sections ORDER BY key", null).use { c ->
             while (c.moveToNext()) {
                 val key = c.getString(0)
                 if (key !in numbers) continue
                 val s = LineSection.of(c.getString(1)) ?: continue
                 if (s.byAccount) continue
                 byNumber.getOrPut(key) { HashMap() }[s] =
-                    StoredSection(if (c.isNull(2)) null else c.getString(2), c.getLong(3), if (c.isNull(4)) null else c.getString(4))
+                    StoredSection(if (c.isNull(2)) null else c.getString(2), c.getLong(3), if (c.isNull(4)) null else c.getString(4), c.getInt(5) == 1)
             }
         }
         return sims.map { s ->
