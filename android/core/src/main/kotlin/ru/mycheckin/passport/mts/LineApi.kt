@@ -433,6 +433,23 @@ object LineParse {
         )
     }
 
+    /**
+     * Пакетный ответ (начисления, комментарии) — по ключам: каждому номеру или счёту свой
+     * фрагмент в том же виде, что и ответ МТС, чтобы хранить его и разбирать как обычный ответ.
+     * Ключа нет в ответе — пустой массив (например, комментарий не задан).
+     */
+    fun splitBulk(section: LineSection, body: String, keys: List<String>): Map<String, String> {
+        if (keys.size == 1) return mapOf(keys[0] to body)
+        val idField = when (section) {
+            LineSection.CHARGES -> "id"
+            LineSection.COMMENT -> "msisdn"
+            LineSection.ACCOUNT_COMMENT -> "account"
+            else -> return keys.associateWith { body }
+        }
+        val byKey = json(body).items().groupBy { it.field(idField).str() }
+        return keys.associateWith { k -> Json.write(byKey[k].orEmpty()) }
+    }
+
     /** Номер заявки из ответа на изменение: {"eventID": …}, просто строка, messageId/requestId или заголовок x-trace-id. */
     fun eventAck(r: HttpResponse): EventAck {
         val j = Json.parseOrNull(r.body.trim()) ?: r.body.trim().takeIf { it.isNotEmpty() && !it.startsWith("<") }
@@ -506,10 +523,66 @@ class LineApi(private val c: MtsClient) {
         if (prices) add("fields" to "CalculatePrices")
     }
 
+    private fun get(path: String, query: List<Pair<String, String>>) = c.request("GET", path, query).body
+
+    private fun post(path: String, body: Any, query: List<Pair<String, String>> = emptyList()) =
+        c.request("POST", path, query, Json.write(body), safeToRepeat = true).body
+
+    private fun countersQuery(msisdn: String) = listOf(
+        "fields" to "MOAF,forisCounters,h2oProfile",
+        "customerAccount.accountNo" to msisdn,
+        "customerAccount.productRelationship.product.productLine.name" to "Counters",
+    )
+
+    private fun tariffQuery(msisdn: String) = listOf(
+        "productCharacteristic.name" to "MSISDN",
+        "productCharacteristic.value" to msisdn,
+        "fields" to "productCharacteristic,place.role,place.externalID,productOffering.name,productOffering.href,productOffering.externalID,productOffering.validFor,TariffProductWithRegionalTariff",
+        "productLine.name" to "MobileConnectivity",
+    )
+
+    private fun forwardingQuery(msisdn: String) = listOf(
+        "productCharacteristic.name" to "MSISDN", "productCharacteristic.value" to msisdn, "productLine.name" to "CallForwarding",
+    )
+
+    // ---- Разделы для хранения: тело ответа как есть ----
+
+    /**
+     * Тело ответа МТС для раздела [s] по номеру или лицевому счёту [key]. Хранится как есть и
+     * разбирается [LineParse] при чтении (см. [LineSnapshot.build]). Пакетные разделы — [rawBulk].
+     */
+    fun raw(s: LineSection, key: String): String = when (s) {
+        LineSection.BALANCE -> get(PATH_BALANCE_ACCOUNT, listOf("fields" to "MOAF", "accountNo" to key))
+        LineSection.UNPAID -> post(PATH_UNPAID, listOf(key))
+        LineSection.PROMISED -> get(PATH_PROMISED_PARAMS, listOf("account" to key))
+        LineSection.ACCOUNT_BUDGET -> post(PATH_BUDGET_ACCOUNT, linkedMapOf("personalAccountNumber" to key, "language" to "Ru"))
+        LineSection.BLOCKS -> get(PATH_PRODUCTS, productQuery(key, "block", false, false))
+        LineSection.SERVICES -> get(PATH_PRODUCTS, productQuery(key, "service", false, true))
+        LineSection.LOCATION -> get(PATH_LOCATION, msisdnQ(key))
+        LineSection.COUNTERS -> get(PATH_COUNTERS, countersQuery(key))
+        LineSection.TARIFF -> get(PATH_TARIFF, tariffQuery(key))
+        LineSection.TARIFF_FEE -> get(PATH_TARIFF_FEE, msisdnQ(key))
+        LineSection.FORWARDING -> get(PATH_FORWARDING, forwardingQuery(key))
+        LineSection.BUDGET -> post(PATH_BUDGET_MSISDN, linkedMapOf("msisdn" to key, "language" to "Ru"))
+        LineSection.SIM_TYPE -> get(PATH_SIM_TYPE, msisdnQ(key))
+        LineSection.CHARGES, LineSection.COMMENT, LineSection.ACCOUNT_COMMENT -> rawBulk(s, listOf(key)).getValue(key)
+    }
+
+    /** Пакетный раздел для нескольких номеров или счетов (до [LineSection.bulkSize]) — одним вызовом. */
+    fun rawBulk(s: LineSection, keys: List<String>): Map<String, String> {
+        require(keys.size in 1..s.bulkSize) { "${s.title}: за один вызов не больше ${s.bulkSize}" }
+        val body = when (s) {
+            LineSection.CHARGES -> post(PATH_CHARGES, keys.map { mapOf("id" to it) }, if (keys.size > 1) listOf("isBulk" to "true") else emptyList())
+            LineSection.COMMENT -> post(PATH_COMMENTS_GET, mapOf("msisdns" to keys))
+            LineSection.ACCOUNT_COMMENT -> post(PATH_ACC_COMMENTS_GET, mapOf("accounts" to keys))
+            else -> return keys.associateWith { raw(s, it) }
+        }
+        return LineParse.splitBulk(s, body, keys)
+    }
+
     // ---- Баланс и начисления ----
 
-    fun balanceByAccount(accountNo: String): Balance? =
-        LineParse.balances(c.request("GET", PATH_BALANCE_ACCOUNT, listOf("fields" to "MOAF", "accountNo" to accountNo)).body).firstOrNull()
+    fun balanceByAccount(accountNo: String): Balance? = LineParse.balances(raw(LineSection.BALANCE, accountNo)).firstOrNull()
 
     fun balanceByMsisdn(msisdn: String): Balance? = LineParse.balances(c.request("GET", PATH_BALANCE_MSISDN,
         listOf("fields" to "MOAF", "characteristic.name" to "MSISDN", "characteristic.value" to msisdn)).body).firstOrNull()
@@ -526,11 +599,7 @@ class LineApi(private val c: MtsClient) {
     fun unpaid(accounts: List<String>): Double? =
         LineParse.unpaid(c.request("POST", PATH_UNPAID, body = Json.write(accounts), safeToRepeat = true).body)
 
-    fun counters(msisdn: String): List<Counter> = LineParse.counters(c.request("GET", PATH_COUNTERS, listOf(
-        "fields" to "MOAF,forisCounters,h2oProfile",
-        "customerAccount.accountNo" to msisdn,
-        "customerAccount.productRelationship.product.productLine.name" to "Counters",
-    )).body)
+    fun counters(msisdn: String): List<Counter> = LineParse.counters(raw(LineSection.COUNTERS, msisdn))
 
     fun paymentsByAccount(accountNo: String, from: LocalDate, to: LocalDate): List<Payment> = LineParse.payments(c.request("GET", PATH_PAYMENTS_ACCOUNT,
         listOf("accountNumber" to accountNo, "dateFrom" to MtsDate.dayStart(from), "dateTo" to MtsDate.dayEnd(to))).body)
@@ -544,18 +613,13 @@ class LineApi(private val c: MtsClient) {
     // ---- Услуги, блокировки, тариф ----
 
     fun services(msisdn: String, prices: Boolean = true) = LineParse.products(c.request("GET", PATH_PRODUCTS, productQuery(msisdn, "service", false, prices)).body)
-    fun blocks(msisdn: String) = LineParse.products(c.request("GET", PATH_PRODUCTS, productQuery(msisdn, "block", false, false)).body)
+    fun blocks(msisdn: String) = LineParse.products(raw(LineSection.BLOCKS, msisdn))
     fun availableServices(msisdn: String) = LineParse.products(c.request("GET", PATH_PRODUCTS, productQuery(msisdn, "service", true, false)).body)
     fun availableBlocks(msisdn: String) = LineParse.products(c.request("GET", PATH_PRODUCTS, productQuery(msisdn, "block", true, false)).body)
 
-    fun tariff(msisdn: String): Tariff? = LineParse.tariff(c.request("GET", PATH_TARIFF, listOf(
-        "productCharacteristic.name" to "MSISDN",
-        "productCharacteristic.value" to msisdn,
-        "fields" to "productCharacteristic,place.role,place.externalID,productOffering.name,productOffering.href,productOffering.externalID,productOffering.validFor,TariffProductWithRegionalTariff",
-        "productLine.name" to "MobileConnectivity",
-    )).body)
+    fun tariff(msisdn: String): Tariff? = LineParse.tariff(raw(LineSection.TARIFF, msisdn))
 
-    fun tariffFee(msisdn: String): TariffFee? = LineParse.tariffFee(c.request("GET", PATH_TARIFF_FEE, msisdnQ(msisdn)).body)
+    fun tariffFee(msisdn: String): TariffFee? = LineParse.tariffFee(raw(LineSection.TARIFF_FEE, msisdn))
 
     fun availableTariffs(msisdn: String): List<AvailableTariff> = LineParse.availableTariffs(c.request("GET", PATH_PRODUCTS, listOf(
         "marketSegment.characteristic.name" to "MSISDN",
@@ -596,9 +660,7 @@ class LineApi(private val c: MtsClient) {
 
     // ---- Переадресация, роуминг, SIM ----
 
-    fun forwarding(msisdn: String): List<Forwarding> = LineParse.forwarding(c.request("GET", PATH_FORWARDING, listOf(
-        "productCharacteristic.name" to "MSISDN", "productCharacteristic.value" to msisdn, "productLine.name" to "CallForwarding",
-    )).body)
+    fun forwarding(msisdn: String): List<Forwarding> = LineParse.forwarding(raw(LineSection.FORWARDING, msisdn))
 
     /** Включить ([add]) или выключить переадресацию. */
     fun changeForwarding(msisdn: String, rule: Forwarding, add: Boolean): EventAck = LineParse.eventAck(c.request("POST", PATH_FORWARDING_CHANGE,
@@ -619,9 +681,9 @@ class LineApi(private val c: MtsClient) {
             "relatedParty" to linkedMapOf("type" to "Individual", "location" to linkedMapOf("id" to "000000000", "role" to "point-of-sale")),
         ))))
 
-    fun location(msisdn: String): Location = LineParse.location(c.request("GET", PATH_LOCATION, msisdnQ(msisdn)).body)
+    fun location(msisdn: String): Location = LineParse.location(raw(LineSection.LOCATION, msisdn))
 
-    fun simType(msisdn: String): String? = LineParse.simType(c.request("GET", PATH_SIM_TYPE, msisdnQ(msisdn)).body)
+    fun simType(msisdn: String): String? = LineParse.simType(raw(LineSection.SIM_TYPE, msisdn))
 
     // ---- Комментарии ----
 
@@ -649,16 +711,14 @@ class LineApi(private val c: MtsClient) {
 
     // ---- Обещанный платёж, корпоративный бюджет ----
 
-    fun promised(accountNo: String): PromisedPayment = LineParse.promised(c.request("GET", PATH_PROMISED_PARAMS, listOf("account" to accountNo)).body)
+    fun promised(accountNo: String): PromisedPayment = LineParse.promised(raw(LineSection.PROMISED, accountNo))
 
     fun setPromised(accountNo: String, amount: Int): EventAck =
         LineParse.eventAck(c.requestOnHost("POST", PATH_PROMISED_SET, Json.write(linkedMapOf("amount" to amount, "accountNumber" to accountNo))))
 
-    fun budgetRules(msisdn: String): List<BudgetRule> = LineParse.budgetRules(c.request("POST", PATH_BUDGET_MSISDN,
-        body = Json.write(linkedMapOf("msisdn" to msisdn, "language" to "Ru")), safeToRepeat = true).body)
+    fun budgetRules(msisdn: String): List<BudgetRule> = LineParse.budgetRules(raw(LineSection.BUDGET, msisdn))
 
-    fun budgetRulesByAccount(accountNo: String): List<BudgetRule> = LineParse.budgetRules(c.request("POST", PATH_BUDGET_ACCOUNT,
-        body = Json.write(linkedMapOf("personalAccountNumber" to accountNo, "language" to "Ru")), safeToRepeat = true).body)
+    fun budgetRulesByAccount(accountNo: String): List<BudgetRule> = LineParse.budgetRules(raw(LineSection.ACCOUNT_BUDGET, accountNo))
 
     // ---- Заявки ----
 

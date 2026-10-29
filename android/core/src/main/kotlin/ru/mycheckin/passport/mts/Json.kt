@@ -2,7 +2,7 @@ package ru.mycheckin.passport.mts
 
 /**
  * Небольшой JSON без внешних зависимостей (ядро — чистый Kotlin/JVM).
- * Запись: Map / List / String / Number / Boolean; ключи со значением null пропускаются.
+ * Запись: Map / List / String / Int / Long / Double / Boolean; ключи со значением null пропускаются.
  * Разбор: объекты → Map, массивы → List, числа → Long или Double.
  */
 object Json {
@@ -14,6 +14,7 @@ object Json {
             null -> sb.append("null")
             is String -> quote(sb, v)
             is Boolean, is Int, is Long -> sb.append(v.toString())
+            is Double -> if (v.isFinite()) sb.append(v.toString()) else sb.append("null")
             is Map<*, *> -> {
                 sb.append('{')
                 var first = true
