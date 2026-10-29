@@ -197,7 +197,8 @@ class MtsClient(
             safeToRepeat,
         )
         var r = send(token())
-        if (r.code == 401) r = send(token(force = true))
+        // 1014 — номер или счёт не принадлежит организации: новый токен не поможет, лишний вызов не тратим.
+        if (r.code == 401 && Json.parseOrNull(r.body).field("errorCode").str() != "1014") r = send(token(force = true))
         if (r.code !in 200..299) {
             throw MtsApiException("МТС ответил HTTP ${r.code}: ${PersonalDataApi.describeHttpError(r.body)}", r)
         }
@@ -205,6 +206,29 @@ class MtsClient(
     }
 
     private fun url(path: String) = config.apiBaseUrl.trimEnd('/') + path
+
+    /**
+     * Любой метод МТС Бизнес API: [path] — от базового адреса (`/Bills/CheckBalanceByAccount`),
+     * [query] — параметры строки запроса. Идёт через лимитер, с обновлением токена и повторами.
+     * [safeToRepeat] — можно ли повторить при обрыве связи (чтение — да, изменения — нет).
+     */
+    fun request(
+        method: String, path: String, query: List<Pair<String, String>> = emptyList(),
+        body: String? = null, safeToRepeat: Boolean = method == "GET",
+    ): HttpResponse = api(method, url(path) + queryString(query), emptyMap(), body, safeToRepeat)
+
+    /**
+     * Метод вне `/b2b/v1` на том же сервере (например, `/MobileAPI/1/Payment/PromisedPayment`).
+     * Сервер берётся из настроенного адреса API.
+     */
+    fun requestOnHost(method: String, absolutePath: String, body: String? = null, safeToRepeat: Boolean = false): HttpResponse {
+        val base = config.apiBaseUrl.trimEnd('/')
+        val host = URI(base).let { "${it.scheme}://${it.authority}" }
+        return api(method, host + absolutePath, emptyMap(), body, safeToRepeat)
+    }
+
+    private fun queryString(q: List<Pair<String, String>>): String =
+        if (q.isEmpty()) "" else "?" + q.joinToString("&") { (k, v) -> URLEncoder.encode(k, "UTF-8") + "=" + URLEncoder.encode(v, "UTF-8") }
 
     /**
      * Внести персональные данные пользователя номера (гражданин РФ, паспорт РФ).
