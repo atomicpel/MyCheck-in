@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+    <item
+        android:id="@+id/sel_all"
+        android:icon="@drawable/ic_select_all"
+        android:title="Выбрать все показанные"
+        app:showAsAction="ifRoom" />
+    <item
+        android:id="@+id/sel_refresh"
+        android:icon="@drawable/ic_sync"
+        android:title="Обновить выбранные"
+        app:showAsAction="ifRoom" />
+    <item
+        android:id="@+id/sel_comment"
+        android:title="Комментарий на номерах"
+        app:showAsAction="never" />
+    <item
+        android:id="@+id/sel_block_on"
+        android:title="Включить добровольную блокировку"
+        app:showAsAction="never" />
+    <item
+        android:id="@+id/sel_block_off"
+        android:title="Снять добровольную блокировку"
+        app:showAsAction="never" />
+    <item
+        android:id="@+id/sel_calls"
+        android:title="Детализация на email"
+        app:showAsAction="never" />
+    <item
+        android:id="@+id/sel_balance_report"
+        android:title="Отчёт по балансу на email"
+        app:showAsAction="never" />
+    <item
+        android:id="@+id/sel_export"
+        android:title="Выгрузить выбранные в Excel"
+        app:showAsAction="never" />
+</menu>

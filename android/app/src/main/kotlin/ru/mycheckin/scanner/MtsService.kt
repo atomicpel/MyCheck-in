@@ -35,6 +35,7 @@ object MtsService {
     private const val OLD_PASSWORD = "consumer_secret"
 
     private val clients = HashMap<String, MtsClient>()
+    private val quietClients = HashMap<String, MtsClient>()
     private val limiters = HashMap<String, RateLimiter>()
     private var prefs: SharedPreferences? = null
 
@@ -84,12 +85,14 @@ object MtsService {
         val updated = if (list.any { it.id == a.id }) list.map { if (it.id == a.id) a else it } else list + a
         securePrefs(context).edit().putString(ACCOUNTS, encode(updated)).apply()
         clients.remove(a.id)   // новый логин — новый токен
+        quietClients.remove(a.id)
     }
 
     @Synchronized
     fun deleteAccount(context: Context, id: String) {
         securePrefs(context).edit().putString(ACCOUNTS, encode(accounts(context).filter { it.id != id })).apply()
         clients.remove(id)
+        quietClients.remove(id)
     }
 
     fun newAccountId(): String = UUID.randomUUID().toString()
@@ -104,6 +107,7 @@ object MtsService {
     fun saveAddresses(context: Context, tokenUrl: String, apiBase: String) {
         securePrefs(context).edit().putString(TOKEN_URL, tokenUrl).putString(API_BASE, apiBase).apply()
         clients.clear()
+        quietClients.clear()
     }
 
     /** Счётчик вызовов за месяц — свой у каждого доступа, переживает перезапуск приложения. */
@@ -126,5 +130,19 @@ object MtsService {
         val config = MtsConfig(account.login, account.password, tokenUrl(context), apiBase(context))
         val app = context.applicationContext
         return MtsClient(config, limiter(context, account.id), log = { Journal.http(app, it) }).also { clients[account.id] = it }
+    }
+
+    /**
+     * Клиент для фонового обновления сведений: тот же ограничитель доступа (общий счёт вызовов
+     * с экранами), но в журнал попадают только неудачные обращения — сотни успешных чтений
+     * баланса и услуг журнал не засоряют.
+     */
+    @Synchronized
+    fun quietClient(context: Context, account: MtsAccount): MtsClient {
+        quietClients[account.id]?.let { return it }
+        val config = MtsConfig(account.login, account.password, tokenUrl(context), apiBase(context))
+        val app = context.applicationContext
+        return MtsClient(config, limiter(context, account.id), log = { if (!it.ok) Journal.http(app, it) })
+            .also { quietClients[account.id] = it }
     }
 }

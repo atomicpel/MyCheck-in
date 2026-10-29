@@ -65,6 +65,8 @@ dependencies {
     implementation("androidx.swiperefreshlayout:swiperefreshlayout:1.1.0")
     implementation("androidx.activity:activity-ktx:1.9.3")
     implementation("androidx.annotation:annotation-experimental:1.4.1")
+    // Фоновое обновление сведений о номерах из МТС (по расписанию, переживает перезагрузку)
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
 
     val camerax = "1.3.4"
     implementation("androidx.camera:camera-core:$camerax")

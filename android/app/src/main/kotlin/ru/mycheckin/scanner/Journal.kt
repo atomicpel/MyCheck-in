@@ -31,10 +31,12 @@ enum class LogCategory(val label: String) {
     SETTINGS("Настройки"),
     VAULT("Сервер"),
     SECURITY("Безопасность"),
+    LINES("Номера МТС"),
+    CHANGE("Изменение в МТС"),
     HTTP("Обращение к МТС"),
     APP("Приложение");
 
-    val isMts: Boolean get() = this in setOf(SYNC, OWNER, SEND, CHECK, HTTP) || this == SETTINGS
+    val isMts: Boolean get() = this in setOf(SYNC, OWNER, SEND, CHECK, HTTP, LINES, CHANGE) || this == SETTINGS
 }
 
 /** Запись журнала с обращениями к МТС, которые были сделаны в её рамках. */
