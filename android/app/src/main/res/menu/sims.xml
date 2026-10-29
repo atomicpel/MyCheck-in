@@ -7,6 +7,11 @@
         android:title="Загрузить из МТС"
         app:showAsAction="ifRoom" />
     <item
+        android:id="@+id/action_lines"
+        android:icon="@drawable/ic_signal"
+        android:title="Номера МТС: баланс, услуги, блокировки"
+        app:showAsAction="ifRoom" />
+    <item
         android:id="@+id/action_journal"
         android:icon="@drawable/ic_history"
         android:title="Журнал работы"

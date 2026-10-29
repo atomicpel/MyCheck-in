@@ -162,6 +162,11 @@ class SimEditActivity : AppCompatActivity() {
                 R.id.action_load_owner -> loadOwner()
                 R.id.action_delete -> askDelete()
                 R.id.action_journal -> openJournal()
+                R.id.action_line -> {
+                    val m = msisdnOf(phone.text.toString())
+                    if (m == null) Snackbar.make(phone, "Сначала укажите номер МТС", Snackbar.LENGTH_SHORT).show()
+                    else openScreen(Intent(this, LineDetailActivity::class.java).putExtra(LineDetailActivity.EXTRA_MSISDN, m))
+                }
             }
             true
         }

@@ -171,6 +171,7 @@ class SimListActivity : AppCompatActivity() {
                 R.id.action_contracts -> renameContracts()
                 R.id.action_settings -> openScreen(Intent(this, SettingsActivity::class.java))
                 R.id.action_journal -> openJournal()
+                R.id.action_lines -> openScreen(Intent(this, LinesActivity::class.java))
             }
             true
         }
