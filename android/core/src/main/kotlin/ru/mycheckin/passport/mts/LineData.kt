@@ -423,13 +423,39 @@ object LineSearch {
 enum class SectionStatus { LOADED, UNAVAILABLE, FAILED }
 
 /**
+ * Какие ответы МТС — временный сбой (повторить), а какие — «недоступно для номера» (не повторять
+ * до истечения периода). Проверено на реальном журнале (02.11.2026, 1008 номеров):
+ * - 500 `IL.UnknownError` на обещанном платеже — не сбой: так МТС отвечает по счетам, где операции нет;
+ * - 421 `3003` «Сервис Foris временно недоступен» — временный сбой, хоть и код 4xx;
+ * - 400 «Отсутствует Группа КБ», 403 `OperationClose`, 423 `PhoneBlocked` — недоступно.
+ */
+object LineErrors {
+    private val TRANSIENT_CODES = setOf(408, 421, 425, 429, 502, 503, 504)
+
+    fun isTransient(code: Int?, body: String?): Boolean {
+        if (code == null) return true                      // нет ответа: связь
+        val b = body.orEmpty()
+        if (b.contains("временно недоступ", true) || b.contains("\"3003\"")) return true
+        if (code in TRANSIENT_CODES) return true
+        if (code >= 500) return !b.contains("UnknownError", true)
+        return false
+    }
+
+    /** Понятный текст ошибки из тела ответа МТС. */
+    fun describe(body: String?): String? {
+        val j = Json.parseOrNull(body.orEmpty().trim()) ?: return null
+        return listOf("description", "message", "errorMessage", "error_description").firstNotNullOfOrNull { j.field(it).str()?.ifBlank { null } }
+    }
+}
+
+/**
  * Категории сведений с настраиваемым периодом обновления. [defaultMinutes] — по умолчанию,
  * 0 — не обновлять в фоне. NUMBERS — список номеров и SIM (структура абонента), без разделов.
  */
 enum class LineCategory(val title: String, val hint: String, val sections: Set<LineSection>, val defaultMinutes: Int) {
     NUMBERS("Список номеров и SIM", "Новые и пропавшие номера, смена SIM-карты, контракты", emptySet(), 24 * 60),
-    BALANCE("Баланс и счёт", "Баланс, порог блокировки, неоплаченные счета, обещанный платёж",
-        setOf(LineSection.BALANCE, LineSection.UNPAID, LineSection.PROMISED), 60),
+    BALANCE("Баланс и счёт", "Баланс, порог блокировки, неоплаченные счета",
+        setOf(LineSection.BALANCE, LineSection.UNPAID), 60),
     BLOCKS("Блокировки", "Добровольные, принудительные, по неоплате", setOf(LineSection.BLOCKS), 60),
     LOCATION("Роуминг", "В какой стране номер", setOf(LineSection.LOCATION), 60),
     CHARGES("Начисления за месяц", "Сколько начислено с начала месяца", setOf(LineSection.CHARGES), 3 * 60),
@@ -439,6 +465,7 @@ enum class LineCategory(val title: String, val hint: String, val sections: Set<L
     TARIFF("Тариф и абонплата", "Тариф, плата сейчас и со следующего периода", setOf(LineSection.TARIFF, LineSection.TARIFF_FEE), 24 * 60),
     FORWARDING("Переадресация", "Правила переадресации звонков", setOf(LineSection.FORWARDING), 24 * 60),
     BUDGET("Корпоративный бюджет", "Правила списания по номеру и счёту", setOf(LineSection.BUDGET, LineSection.ACCOUNT_BUDGET), 24 * 60),
+    PROMISED("Обещанный платёж", "Условия и действующий обещанный платёж по счёту", setOf(LineSection.PROMISED), 24 * 60),
     SIM_TYPE("Тип SIM-карты", "Пластиковая или eSIM", setOf(LineSection.SIM_TYPE), 7 * 24 * 60);
 
     companion object {

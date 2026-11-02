@@ -191,22 +191,45 @@ class LineStore private constructor(context: Context) : SQLiteOpenHelper(context
         val sims = SimDb.get(context).all().filter { it.msisdn.length == 11 }
         val contracts = SimDb.get(context).contracts().associateBy { it.id }
         val accountNos = sims.map { it.accountNo }.filter { it.isNotEmpty() }.toSet()
-        val accounts = accountNos.associateWith { sections(it) }
-        val numbers = sims.map { it.msisdn }.toSet()
-
-        val byNumber = HashMap<String, MutableMap<LineSection, StoredSection>>()
-        readableDatabase.rawQuery("SELECT key, section, body, fetched_at, error, unavailable FROM sections ORDER BY key", null).use { c ->
+        // Разделы лицевых счетов — одним запросом (счетов бывает сотни; ответы небольшие).
+        val accounts = HashMap<String, MutableMap<LineSection, StoredSection>>()
+        val accSections = LineSection.entries.filter { it.byAccount }.joinToString(",") { "'${it.name}'" }
+        readableDatabase.rawQuery("SELECT key, section, body, fetched_at, error, unavailable FROM sections WHERE section IN ($accSections)", null).use { c ->
             while (c.moveToNext()) {
-                val key = c.getString(0)
-                if (key !in numbers) continue
+                val k = c.getString(0)
+                if (k !in accountNos) continue
                 val s = LineSection.of(c.getString(1)) ?: continue
-                if (s.byAccount) continue
-                byNumber.getOrPut(key) { HashMap() }[s] =
+                accounts.getOrPut(k) { HashMap() }[s] =
                     StoredSection(if (c.isNull(2)) null else c.getString(2), c.getLong(3), if (c.isNull(4)) null else c.getString(4), c.getInt(5) == 1)
             }
         }
+        val numbers = sims.map { it.msisdn }.toSet()
+
+        // Ответы МТС по 1000+ номерам — десятки мегабайт: читаем по номеру за раз, сразу разбираем,
+        // а тела ответов не держим (02.11.2026 на 1008 номерах прежний вариант исчерпал память).
+        val snaps = HashMap<String, LineSnapshot>(sims.size * 2)
+        val accountByNumber = sims.associate { it.msisdn to it.accountNo }
+        var key: String? = null
+        var current = HashMap<LineSection, StoredSection>()
+        fun flush() {
+            val k = key ?: return
+            val acc = accountByNumber[k].orEmpty()
+            snaps[k] = LineSnapshot.build(k, acc, current, accounts[acc].orEmpty())
+            current = HashMap()
+        }
+        readableDatabase.rawQuery("SELECT key, section, body, fetched_at, error, unavailable FROM sections ORDER BY key", null).use { c ->
+            while (c.moveToNext()) {
+                val k = c.getString(0)
+                if (k !in numbers) continue
+                val s = LineSection.of(c.getString(1)) ?: continue
+                if (s.byAccount) continue
+                if (k != key) { flush(); key = k }
+                current[s] = StoredSection(if (c.isNull(2)) null else c.getString(2), c.getLong(3), if (c.isNull(4)) null else c.getString(4), c.getInt(5) == 1)
+            }
+        }
+        flush()
         return sims.map { s ->
-            val snap = LineSnapshot.build(s.msisdn, s.accountNo, byNumber.remove(s.msisdn).orEmpty(), accounts[s.accountNo].orEmpty())
+            val snap = snaps[s.msisdn] ?: LineSnapshot.build(s.msisdn, s.accountNo, emptyMap(), accounts[s.accountNo].orEmpty())
             LineRow(
                 msisdn = s.msisdn,
                 owner = s.fullName,

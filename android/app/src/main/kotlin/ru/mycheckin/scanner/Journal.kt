@@ -122,6 +122,17 @@ object Journal {
     /** Текущая операция потока: обращения к МТС из [MtsService] приписываются к ней. */
     private val current = ThreadLocal<Op>()
 
+    /** Текущая запись журнала потока — чтобы передать её рабочим потокам. */
+    fun currentOp(): Op? = current.get()
+
+    /** Выполнить [block] в рамках записи [op] (обращения к МТС из этого потока попадут в неё). */
+    fun <T> within(op: Op?, block: () -> T): T {
+        if (op == null) return block()
+        val outer = current.get()
+        current.set(op)
+        try { return block() } finally { if (outer != null) current.set(outer) else current.remove() }
+    }
+
     /** Операция в журнале: собирает строки подробностей и итог. */
     class Op internal constructor(private val context: Context, val id: Long) {
         internal val lines = mutableListOf<String>()

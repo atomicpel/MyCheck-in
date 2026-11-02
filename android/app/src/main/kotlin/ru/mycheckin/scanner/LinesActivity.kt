@@ -278,8 +278,8 @@ class LinesActivity : AppCompatActivity() {
                 }
                 syncText.text = st.phase
             }
-            // Пока идёт обновление — перечитываем список не чаще раза в 4 секунды.
-            if (System.currentTimeMillis() - lastReload > 4000) reload()
+            // Пока идёт обновление — перечитываем список не чаще раза в 5 с, при большом списке — в 20 с.
+            if (System.currentTimeMillis() - lastReload > if (rows.size > 300) 20_000 else 5_000) reload()
         } else {
             syncBar.visibility = View.GONE
             if (wasRunning) {
@@ -699,6 +699,11 @@ class LinesActivity : AppCompatActivity() {
                 }
                 LinePrefs.Initial.DONE -> action("Понятно") { LinePrefs.dismissInitial(a); refresh() }
                 LinePrefs.Initial.NONE -> Unit
+            }
+            val restricted = Background.restricted(a)
+            if (status == LinePrefs.Initial.RUNNING && restricted) {
+                box.addView(v.hint(Background.advice()).apply { setTextColor(v.color(R.color.warn)) })
+                action("Не ограничивать в фоне") { Background.ask(a) }
             }
             action("Журнал") { openScreen(Intent(a, JournalActivity::class.java)) }
             box.addView(buttons)

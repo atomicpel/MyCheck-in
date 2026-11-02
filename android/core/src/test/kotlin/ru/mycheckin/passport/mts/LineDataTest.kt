@@ -219,4 +219,20 @@ class LineDataTest {
         assertEquals("Раз в сутки", LineCategory.periodTitle(1440))
         assertEquals("3 ч", LineCategory.periodTitle(180))
     }
+
+    @Test fun errorKindsFromRealJournal() {
+        assertTrue(!LineErrors.isTransient(500, """{"code":500,"message":"IL.UnknownError","description":"FORIS_IL Неизвестная ошибка"}"""))
+        assertTrue(LineErrors.isTransient(421, """{"errorMessage":"Сервис Foris временно недоступен","sourceID":"PublicApi","errorCode":"3003"}"""))
+        assertTrue(!LineErrors.isTransient(400, """{"message":"Отсутствует Группа КБ"}"""))
+        assertTrue(!LineErrors.isTransient(403, """{"code":403,"message":"OperationClose"}"""))
+        assertTrue(!LineErrors.isTransient(423, """{"code":423,"message":"PhoneBlocked"}"""))
+        assertTrue(LineErrors.isTransient(503, "<html>Service Unavailable</html>"))
+        assertTrue(LineErrors.isTransient(500, "Internal Server Error"))
+        assertTrue(LineErrors.isTransient(429, ""))
+        assertTrue(LineErrors.isTransient(null, null))
+        assertEquals("FORIS_IL Для данного абонента операция не разрешена!",
+            LineErrors.describe("""{"code":403,"message":"OperationClose","description":"FORIS_IL Для данного абонента операция не разрешена!"}"""))
+        assertEquals("Отсутствует Группа КБ", LineErrors.describe("""{"message":"Отсутствует Группа КБ"}"""))
+        assertEquals(24 * 60 * 60_000L, LineSchedule().ttl[LineSection.PROMISED])
+    }
 }

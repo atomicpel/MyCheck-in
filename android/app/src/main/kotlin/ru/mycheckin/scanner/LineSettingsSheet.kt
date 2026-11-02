@@ -76,6 +76,15 @@ object LineSettingsSheet {
             setOnClickListener { LineSync.startInitial(a, reset = st != LinePrefs.Initial.RUNNING); dialog.dismiss(); onSaved() }
         })
 
+        if (Background.restricted(a)) {
+            col.addView(v.hint(Background.advice()).apply { setTextColor(v.color(R.color.warn)); setPadding(0, v.px(8), 0, 0) })
+            col.addView(MaterialButton(a, null, com.google.android.material.R.attr.materialButtonOutlinedStyle).apply {
+                text = "Не ограничивать в фоне"
+                layoutParams = LinearLayout.LayoutParams(-2, -2).apply { topMargin = v.px(4) }
+                setOnClickListener { Background.ask(a) }
+            })
+        }
+
         // ---- Периоды по категориям ----
         col.addView(v.label("Как часто обновлять"))
         col.addView(v.hint("Свой период для каждой категории сведений. «Выкл.» — не загружать в фоне (в карточке номера по кнопке «Обновить» загрузится всё)."))

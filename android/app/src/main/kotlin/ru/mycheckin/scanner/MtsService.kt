@@ -134,15 +134,18 @@ object MtsService {
 
     /**
      * Клиент для фонового обновления сведений: тот же ограничитель доступа (общий счёт вызовов
-     * с экранами), но в журнал попадают только неудачные обращения — сотни успешных чтений
-     * баланса и услуг журнал не засоряют.
+     * с экранами), но в журнал попадают только сбои связи и МТС — тысячи успешных чтений и ожидаемых
+     * ответов «недоступно» журнал не засоряют (их итог — в записи обновления).
      */
     @Synchronized
     fun quietClient(context: Context, account: MtsAccount): MtsClient {
         quietClients[account.id]?.let { return it }
         val config = MtsConfig(account.login, account.password, tokenUrl(context), apiBase(context))
         val app = context.applicationContext
-        return MtsClient(config, limiter(context, account.id), log = { if (!it.ok) Journal.http(app, it) })
+        // Ответы «недоступно для номера» (4xx, IL.UnknownError) — ожидаемые, в журнал идут только сбои.
+        return MtsClient(config, limiter(context, account.id), log = {
+            if (!it.ok && ru.mycheckin.passport.mts.LineErrors.isTransient(it.code, it.responseBody)) Journal.http(app, it)
+        })
             .also { quietClients[account.id] = it }
     }
 }

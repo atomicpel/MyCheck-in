@@ -37,10 +37,14 @@ import ru.mycheckin.passport.mts.LineSection
 import ru.mycheckin.passport.mts.LineSnapshot
 import ru.mycheckin.passport.mts.MtsApiException
 import ru.mycheckin.passport.mts.RateLimiter
+import ru.mycheckin.passport.mts.LineErrors
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 /** Настройки сведений о номерах. */
 object LinePrefs {
@@ -135,7 +139,7 @@ object LineSync {
     /** Без уведомления (система не разрешила) работа WorkManager ограничена 10 минутами — заканчиваем раньше. */
     private const val BACKGROUND_BUDGET_MS = 8 * 60_000L + 30_000L
     /** Паузы перед повтором раздела при временном сбое МТС или связи. */
-    private val RETRY_MS = longArrayOf(3_000, 10_000, 30_000)
+    private val RETRY_MS = longArrayOf(2_000, 6_000)
 
     data class State(
         val running: Boolean = false,
@@ -281,12 +285,18 @@ object LineSync {
 
     private class StopRun(val reason: Stop, message: String) : Exception(message)
 
-    /** Временный сбой: связь, таймаут, перегрузка МТС — стоит повторить. */
-    private fun transient(e: Exception): Boolean = when (e) {
-        is java.io.IOException -> true
-        is MtsApiException -> (e.response?.code ?: 0).let { it >= 500 || it == 429 || it == 408 }
-        else -> false
-    }
+    /** Итог запроса раздела. */
+    private enum class Got { OK, UNAVAILABLE, FAILED }
+
+    /** Параллельных запросов на доступ: задержка МТС 0,3–3 с, иначе темп не набрать. */
+    private const val PARALLEL = 3
+
+    /**
+     * Сколько номеров подряд без единого успеха, чтобы считать раздел недоступным для всех
+     * (например, «Отсутствует Группа КБ» — корпоративный бюджет не подключён). Остальные номера
+     * по этому разделу в этом проходе не запрашиваются.
+     */
+    private const val SKIP_AFTER = 20
 
     private fun isAuthProblem(e: Exception): Boolean {
         val m = e.message.orEmpty()
@@ -302,38 +312,47 @@ object LineSync {
     }
 
     /**
-     * Запросить раздел и сохранить. Временные сбои повторяются [retries] раз с паузами; если связи
-     * так и нет — [StopRun] (обработка остановится и продолжится позже). Ответ 4xx — раздел недоступен
-     * для номера, это запоминается. false — раздел не получен.
+     * Запросить раздел и сохранить. Временные сбои (связь, 5xx, 421, 429) повторяются [retries] раз
+     * с короткими паузами; связи так и нет — [StopRun]: обработка остановится и продолжится позже.
+     * «Недоступно для номера» ([LineErrors]) запоминается и не повторяется до истечения периода.
      */
-    private fun fetch(store: LineStore, api: LineApi, job: LinePlanner.Job, retries: Int, isStopped: () -> Boolean): Boolean {
+    private fun fetch(store: LineStore, api: LineApi, job: LinePlanner.Job, retries: Int, isStopped: () -> Boolean): Pair<Got, String?> {
         var attempt = 0
         while (true) {
             try {
                 if (job.section.bulk) store.putAll(job.section, api.rawBulk(job.section, job.keys))
                 else store.put(job.section, job.keys.single(), api.raw(job.section, job.keys.single()))
-                return true
+                return Got.OK to null
             } catch (e: RateLimiter.MonthlyLimitExceeded) {
                 throw StopRun(Stop.LIMIT, "Исчерпан месячный лимит вызовов тарифа")
             } catch (e: Exception) {
-                if (transient(e)) {
+                val r = (e as? MtsApiException)?.response
+                val network = e is java.io.IOException
+                if (!network && isAuthProblem(e) && (r == null || !LineErrors.isTransient(r.code, r.body))) throw e
+                val transient = network || LineErrors.isTransient(r?.code, r?.body)
+                if (transient) {
                     if (attempt < retries && !isStopped()) { sleep(RETRY_MS[minOf(attempt, RETRY_MS.size - 1)], isStopped); attempt++; continue }
-                    if (e is java.io.IOException) throw StopRun(Stop.NETWORK, "Нет связи с МТС: ${e.message ?: e.javaClass.simpleName}")
+                    if (network) throw StopRun(Stop.NETWORK, "Нет связи с МТС: ${e.message ?: e.javaClass.simpleName}")
                     job.keys.forEach { store.putError(job.section, it, e.message ?: "Сбой МТС", final = false) }
-                    return false
+                    return Got.FAILED to e.message
                 }
-                if (isAuthProblem(e)) throw e
-                val code = (e as? MtsApiException)?.response?.code
-                val final = code != null && code in 400..499
-                job.keys.forEach { store.putError(job.section, it, e.message ?: e.javaClass.simpleName, final) }
-                return false
+                val msg = r?.let { resp -> LineErrors.describe(resp.body)?.let { "HTTP ${resp.code}: $it" } } ?: (e.message ?: e.javaClass.simpleName)
+                job.keys.forEach { store.putError(job.section, it, msg, final = true) }
+                return Got.UNAVAILABLE to msg
             }
         }
     }
 
-    private class Exec(var calls: Int = 0, var errors: Int = 0, var done: Int = 0, var stop: Stop? = null)
+    private class Exec {
+        val calls = AtomicInteger(); val errors = AtomicInteger(); val done = AtomicInteger()
+        val stop = AtomicReference<Stop?>(null)
+    }
 
-    /** Выполнить задания по доступам: общий цикл обычного обновления и первичной загрузки. */
+    /**
+     * Выполнить задания по доступам: общий цикл обычного обновления и первичной загрузки.
+     * [PARALLEL] потоков на доступ, общий темп — [perMinute]. Обращения из всех потоков
+     * попадают в текущую запись журнала ([Journal.within]).
+     */
     private fun execute(
         app: Context, plans: List<Pair<MtsAccount, List<LinePlanner.Job>>>, total: Int, initial: Boolean,
         perMinute: Int, retries: Int, deadline: Long, isStopped: () -> Boolean, problems: MutableSet<String>,
@@ -342,30 +361,62 @@ object LineSync {
         val store = LineStore.get(app)
         val limiter = limiter(perMinute)
         val x = Exec()
+        val op = Journal.currentOp()
         val stopped = { isStopped() || stopRequested.get() }
-        outer@ for ((acc, jobs) in plans) {
+        val progressLock = Any()
+        fun problem(t: String) = synchronized(problems) { problems += t }
+        for ((acc, jobs) in plans) {
+            if (x.stop.get() != null) break
             val api = LineApi(MtsService.quietClient(app, acc))
-            for ((i, job) in jobs.withIndex()) {
-                if (stopped()) { x.stop = Stop.USER; break@outer }
-                if (System.currentTimeMillis() > deadline) { x.stop = Stop.BUDGET; break@outer }
-                val text = job.section.title + if (job.keys.size == 1) " · " + SimFormat.phone(job.keys[0]) else " · ${job.keys.size} шт."
-                try {
-                    limiter.acquire()
-                    if (!fetch(store, api, job, retries, stopped)) x.errors++
-                    x.calls++
-                } catch (e: StopRun) {
-                    problems += e.message.orEmpty(); x.stop = e.reason; break@outer
-                } catch (e: Exception) {
-                    // Доступ не принят МТС — остальные разделы этого доступа не запрашиваем.
-                    problems += "${acc.title.ifBlank { "Доступ" }}: ${e.message}"
-                    x.errors++
-                    x.done += jobs.size - i - 1
-                    break
+            val next = AtomicInteger(0)
+            val authFailed = AtomicBoolean(false)
+            // Раздел недоступен для всех номеров: [успехов, «недоступно»]; skip — раздел → ответ МТС.
+            val tally = ConcurrentHashMap<LineSection, IntArray>()
+            val skip = ConcurrentHashMap<LineSection, String>()
+
+            fun work() {
+                while (true) {
+                    if (x.stop.get() != null || authFailed.get()) return
+                    if (stopped()) { x.stop.compareAndSet(null, Stop.USER); return }
+                    if (System.currentTimeMillis() > deadline) { x.stop.compareAndSet(null, Stop.BUDGET); return }
+                    val i = next.getAndIncrement()
+                    if (i >= jobs.size) return
+                    val job = jobs[i]
+                    val text = job.section.title + if (job.keys.size == 1) " · " + SimFormat.phone(job.keys[0]) else " · ${job.keys.size} шт."
+                    val skipped = skip[job.section]
+                    if (skipped != null) {
+                        job.keys.forEach { store.putError(job.section, it, skipped, final = true) }
+                    } else try {
+                        limiter.acquire()
+                        val (got, msg) = fetch(store, api, job, retries, stopped)
+                        x.calls.incrementAndGet()
+                        if (got == Got.FAILED) x.errors.incrementAndGet()
+                        val t = tally.getOrPut(job.section) { IntArray(2) }
+                        synchronized(t) {
+                            when (got) { Got.OK -> t[0]++; Got.UNAVAILABLE -> t[1]++; Got.FAILED -> Unit }
+                            if (t[0] == 0 && t[1] >= SKIP_AFTER && skip.putIfAbsent(job.section, "${msg.orEmpty()} (для всех номеров)") == null)
+                                problem("${job.section.title}: МТС не даёт эти сведения ни по одному из первых $SKIP_AFTER — остальные не запрашиваю («${msg.orEmpty()}»)")
+                        }
+                    } catch (e: StopRun) {
+                        problem(e.message.orEmpty()); x.stop.compareAndSet(null, e.reason); return
+                    } catch (e: Exception) {
+                        // Доступ не принят МТС — остальные разделы этого доступа не запрашиваем.
+                        if (authFailed.compareAndSet(false, true)) { problem("${acc.title.ifBlank { "Доступ" }}: ${e.message}"); x.errors.incrementAndGet() }
+                        return
+                    }
+                    val d = x.done.incrementAndGet()
+                    synchronized(progressLock) {
+                        setState(state.copy(running = true, initial = initial, done = maxOf(d, state.done), total = total, phase = text))
+                        progress(text, d, total)
+                    }
                 }
-                x.done++
-                setState(state.copy(running = true, initial = initial, done = x.done, total = total, phase = text))
-                progress(text, x.done, total)
             }
+
+            val threads = (1..minOf(PARALLEL, jobs.size)).map { n ->
+                Thread({ Journal.within(op) { runCatching { work() }.onFailure { problem("Сбой обработки: ${it.javaClass.simpleName}: ${it.message}") } } }, "lines-$n").apply { start() }
+            }
+            threads.forEach { it.join() }
+            if (authFailed.get()) x.done.addAndGet((jobs.size - next.get()).coerceAtLeast(0))
         }
         return x
     }
@@ -446,10 +497,11 @@ object LineSync {
                 op.line("Номеров: ${groups.sumOf { it.second.size }}, осталось загрузить: $total, проход ${LinePrefs.initialPasses(app) + 1}")
                 val x = if (total == 0) Exec() else execute(app, plans, total, true, LinePrefs.initialPerMinute(app), retries = RETRY_MS.size,
                     deadline = deadline, isStopped = isStopped, problems = problems, progress = progress)
-                op.line("Запросов: ${x.calls}, не получено: ${x.errors}, время: ${(System.currentTimeMillis() - started) / 1000} с")
+                op.line("Запросов: ${x.calls.get()}, не получено из-за сбоев: ${x.errors.get()}, время: ${(System.currentTimeMillis() - started) / 1000} с, " +
+                    "темп до ${LinePrefs.initialPerMinute(app)}/мин, $PARALLEL потока")
                 problems.forEach { op.line(it) }
 
-                when (x.stop) {
+                when (x.stop.get()) {
                     Stop.USER -> {
                         if (!isStopped()) LinePrefs.setInitialPaused(app, true)
                         LinePrefs.setInitialMessage(app, if (isStopped()) "Прервано системой — продолжится автоматически" else "На паузе")
@@ -551,7 +603,7 @@ object LineSync {
                 setState(state.copy(phase = "Обновляю сведения…", total = total))
                 val x = execute(app, plans, total, false, LinePrefs.perMinute(app), retries = 1, deadline = deadline,
                     isStopped = isStopped, problems = problems, progress = progress)
-                calls = x.calls; errors = x.errors; stopped = x.stop != null
+                calls = x.calls.get(); errors = x.errors.get(); stopped = x.stop.get() != null
                 LineStore.get(app).prune(SimDb.get(app).all().flatMap { listOf(it.msisdn, it.accountNo) }.filter { it.isNotEmpty() }.toSet())
                 val message = buildString {
                     append("Запросов: $calls")
