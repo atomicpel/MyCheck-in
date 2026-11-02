@@ -190,6 +190,9 @@ object LineSync {
         wm.enqueueUniquePeriodicWork(WORK_PERIODIC, ExistingPeriodicWorkPolicy.UPDATE, req)
     }
 
+    /** Следующая часть первичной загрузки — сразу после текущей, без растущих пауз повторов. */
+    fun continueInitial(context: Context) = enqueueInitial(context, ExistingWorkPolicy.APPEND_OR_REPLACE)
+
     private fun enqueueInitial(context: Context, policy: ExistingWorkPolicy) {
         val req = OneTimeWorkRequestBuilder<LineSyncWorker>()
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
@@ -388,7 +391,8 @@ object LineSync {
 
     // ---- Первичная загрузка ----
 
-    enum class InitialOutcome { DONE, RETRY, PAUSED, FAILED }
+    /** RETRY — после паузы (нет связи, сбой); CONTINUE — сразу следующей частью (кончилось время фоновой работы). */
+    enum class InitialOutcome { DONE, RETRY, CONTINUE, PAUSED, FAILED }
 
     private fun looksLikeNetwork(m: String) = listOf("интернет", "не ответил", "соединени", "HTTP 5", "HTTP 429", "связ").any { m.contains(it, true) }
 
@@ -451,9 +455,14 @@ object LineSync {
                         LinePrefs.setInitialMessage(app, if (isStopped()) "Прервано системой — продолжится автоматически" else "На паузе")
                         op.warn(); return@op if (isStopped()) InitialOutcome.RETRY else InitialOutcome.PAUSED
                     }
-                    Stop.BUDGET, Stop.NETWORK -> {
-                        LinePrefs.setInitialMessage(app, if (x.stop == Stop.NETWORK) "Нет связи с МТС — продолжится, когда связь появится" else "Продолжится через минуту")
+                    Stop.NETWORK -> {
+                        LinePrefs.setInitialMessage(app, "Нет связи с МТС — продолжится, когда связь появится")
                         op.warn(); return@op InitialOutcome.RETRY
+                    }
+                    Stop.BUDGET -> {
+                        LinePrefs.setInitialMessage(app, "Загружаю частями — следующая часть сразу за этой")
+                        op.line("Время фоновой работы вышло — следующая часть поставлена в очередь")
+                        return@op InitialOutcome.CONTINUE
                     }
                     Stop.LIMIT -> {
                         LinePrefs.finishInitial(app, LinePrefs.Initial.FAILED, "Исчерпан месячный лимит вызовов тарифа")
@@ -728,6 +737,7 @@ class LineSyncWorker(context: Context, params: WorkerParameters) : Worker(contex
                 val fg = foreground("Первичная загрузка…")
                 when (LineSync.runInitial(app, { isStopped }, fg) { text, done, total -> LineSync.updateNotification(app, text, done, total, initial = true) }) {
                     LineSync.InitialOutcome.RETRY -> Result.retry()
+                    LineSync.InitialOutcome.CONTINUE -> { LineSync.continueInitial(app); Result.success() }
                     LineSync.InitialOutcome.FAILED -> Result.failure()
                     else -> Result.success()
                 }
