@@ -430,6 +430,7 @@ enum class SectionStatus { LOADED, UNAVAILABLE, FAILED }
  * - 400 «Отсутствует Группа КБ», 403 `OperationClose`, 423 `PhoneBlocked` — недоступно.
  */
 object LineErrors {
+    /** 421 у МТС — «Сервис Foris временно недоступен» (errorCode 3003), а не «неверный адресат» из HTTP. */
     private val TRANSIENT_CODES = setOf(408, 421, 425, 429, 502, 503, 504)
 
     fun isTransient(code: Int?, body: String?): Boolean {
