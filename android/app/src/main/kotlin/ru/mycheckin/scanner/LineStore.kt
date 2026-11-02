@@ -9,6 +9,7 @@ import ru.mycheckin.passport.mts.LineChange
 import ru.mycheckin.passport.mts.LineRow
 import ru.mycheckin.passport.mts.LineSection
 import ru.mycheckin.passport.mts.LineSnapshot
+import ru.mycheckin.passport.mts.SectionStatus
 import ru.mycheckin.passport.mts.StoredSection
 
 /** Заявка на изменение, отправленная в МТС: её статус проверяется в фоне. */
@@ -97,6 +98,23 @@ class LineStore private constructor(context: Context) : SQLiteOpenHelper(context
             while (c.moveToNext()) {
                 val s = LineSection.of(c.getString(1)) ?: continue
                 out[s to c.getString(0)] = c.getLong(2)
+            }
+        }
+        return out
+    }
+
+    /** Состояние каждого раздела: когда получен и что получено (для первичной загрузки и её прогресса). */
+    fun status(): Map<Pair<LineSection, String>, Pair<Long, SectionStatus>> {
+        val out = HashMap<Pair<LineSection, String>, Pair<Long, SectionStatus>>()
+        readableDatabase.rawQuery("SELECT key, section, fetched_at, body IS NOT NULL, unavailable FROM sections", null).use { c ->
+            while (c.moveToNext()) {
+                val s = LineSection.of(c.getString(1)) ?: continue
+                val st = when {
+                    c.getInt(3) == 1 -> SectionStatus.LOADED
+                    c.getInt(4) == 1 -> SectionStatus.UNAVAILABLE
+                    else -> SectionStatus.FAILED
+                }
+                out[s to c.getString(0)] = c.getLong(2) to st
             }
         }
         return out

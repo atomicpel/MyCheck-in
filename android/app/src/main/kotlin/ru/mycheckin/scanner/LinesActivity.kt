@@ -81,8 +81,10 @@ class LinesActivity : AppCompatActivity() {
     private var lastReload = 0L
     private var loading = false
     private var hasAccess = false
+    private var coverage: ru.mycheckin.passport.mts.LinePlanner.Coverage? = null
 
     private val header = SummaryAdapter()
+    private val initialCard = InitialAdapter()
     private val adapter = LineAdapter()
 
     private val notifications = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
@@ -125,7 +127,7 @@ class LinesActivity : AppCompatActivity() {
         })
 
         list.layoutManager = LinearLayoutManager(this)
-        list.adapter = ConcatAdapter(header, adapter)
+        list.adapter = ConcatAdapter(initialCard, header, adapter)
         list.itemAnimator?.apply { changeDuration = 160; moveDuration = 220 }
         list.addOnScrollListener(object : RecyclerView.OnScrollListener() {
             override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
@@ -157,8 +159,8 @@ class LinesActivity : AppCompatActivity() {
         super.onResume()
         hasAccess = MtsService.hasAccounts(this)
         reload()
-        // Первый запуск: сведений ещё нет — сразу загружаем в фоне.
-        if (LinePrefs.lastRun(this) == 0L && MtsService.hasAccounts(this) && !LineSync.state.running) LineSync.refreshNow(this)
+        // Первый запуск: первичная загрузка всего, затем — обычное обновление по периодам.
+        if (hasAccess && LinePrefs.initial(this) == LinePrefs.Initial.NONE) LineSync.startInitial(this)
     }
 
     override fun onDestroy() {
@@ -175,9 +177,13 @@ class LinesActivity : AppCompatActivity() {
         lastReload = System.currentTimeMillis()
         io.execute {
             val r = runCatching { LineStore.get(this).rows(this) }.getOrDefault(emptyList())
+            val cov = if (LinePrefs.initial(this) != LinePrefs.Initial.DONE || !LinePrefs.initialDismissed(this))
+                runCatching { LineSync.coverage(this) }.getOrNull() else null
             runOnUiThread {
                 loading = false
                 if (isDestroyed) return@runOnUiThread
+                coverage = cov
+                initialCard.refresh()
                 rows = r
                 selected.retainAll(r.map { it.msisdn }.toSet())
                 apply()
@@ -252,6 +258,7 @@ class LinesActivity : AppCompatActivity() {
 
     private fun onSyncState() {
         val st = LineSync.state
+        initialCard.refresh()
         if (st.running) {
             syncBar.visibility = View.VISIBLE
             if (st.total > 0) {
@@ -594,6 +601,107 @@ class LinesActivity : AppCompatActivity() {
             if (x.notLoaded > 0) tile("Без сведений", x.notLoaded.toString(), R.color.neutral, "нажмите — загрузить") {
                 refreshStale(shown.filter { !it.snap.loaded }.map { it.msisdn })
             }
+        }
+    }
+
+    // ---- Первичная загрузка ----
+
+    /** Карточка первичной загрузки над списком: сколько готово, что идёт сейчас, пауза и продолжение. */
+    inner class InitialAdapter : RecyclerView.Adapter<InitialAdapter.VH>() {
+        private var shown = false
+
+        inner class VH(val box: LinearLayout) : RecyclerView.ViewHolder(MaterialCardView(box.context).apply {
+            radius = v.px(22).toFloat(); cardElevation = 0f
+            setCardBackgroundColor(v.attr(com.google.android.material.R.attr.colorSurfaceContainerHigh))
+            strokeWidth = 0
+            addView(box)
+            layoutParams = RecyclerView.LayoutParams(-1, -2).apply { setMargins(v.px(4), v.px(4), v.px(4), v.px(8)) }
+        })
+
+        private fun visible(): Boolean {
+            if (!hasAccess) return false
+            return when (LinePrefs.initial(this@LinesActivity)) {
+                LinePrefs.Initial.NONE -> false
+                LinePrefs.Initial.DONE -> !LinePrefs.initialDismissed(this@LinesActivity)
+                else -> true
+            }
+        }
+
+        fun refresh() {
+            val now = visible()
+            when {
+                now && shown -> notifyItemChanged(0)
+                now -> { shown = true; notifyItemInserted(0) }
+                shown -> { shown = false; notifyItemRemoved(0) }
+            }
+        }
+
+        override fun getItemCount() = if (shown) 1 else 0
+
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) =
+            VH(LinearLayout(parent.context).apply { orientation = LinearLayout.VERTICAL; setPadding(v.px(16), v.px(14), v.px(16), v.px(12)) })
+
+        override fun onBindViewHolder(h: VH, position: Int) {
+            val a = this@LinesActivity
+            val box = h.box
+            box.removeAllViews()
+            val status = LinePrefs.initial(a)
+            val st = LineSync.state
+            val running = st.running && st.initial
+            val paused = LinePrefs.initialPaused(a)
+            val cov = coverage
+
+            val (title, color) = when (status) {
+                LinePrefs.Initial.DONE -> "Первичная загрузка завершена" to R.color.ok
+                LinePrefs.Initial.FAILED -> "Первичная загрузка остановлена" to R.color.bad
+                else -> (if (paused && !running) "Первичная загрузка на паузе" else "Первичная загрузка") to R.color.sent
+            }
+            box.addView(TextView(a).apply {
+                text = title; textSize = 16f; setTypeface(typeface, Typeface.BOLD); setTextColor(v.color(color))
+            })
+
+            if (cov != null && status != LinePrefs.Initial.FAILED) {
+                box.addView(LinearProgressIndicator(a).apply {
+                    isIndeterminate = false; max = 100; progress = cov.percent
+                    trackCornerRadius = v.px(4); trackThickness = v.px(8); setIndicatorColor(v.color(color))
+                    layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = v.px(8) }
+                })
+                val left = cov.total - cov.done
+                box.addView(TextView(a).apply {
+                    textSize = 13f; fontFeatureSettings = "tnum"
+                    setTextColor(v.attr(com.google.android.material.R.attr.colorOnSurface))
+                    setPadding(0, v.px(6), 0, 0)
+                    text = buildString {
+                        append("Готово ${cov.percent} % · ${cov.done} из ${cov.total} сведений")
+                        if (status == LinePrefs.Initial.RUNNING && left > 0) append(" · осталось ≈ ${left / LinePrefs.initialPerMinute(a) + 1} мин")
+                        if (cov.unavailable > 0) append("\nНедоступно для номеров: ${cov.unavailable}")
+                        if (cov.failed > 0) append("\nСо сбоем: ${cov.failed} — " + if (status == LinePrefs.Initial.DONE) "догрузится при обновлении" else "повторю")
+                    }
+                })
+            }
+            val detail = when {
+                running -> st.phase
+                status == LinePrefs.Initial.RUNNING && paused -> "Нажмите «Продолжить» — загрузка продолжится с того места, где остановилась."
+                status == LinePrefs.Initial.RUNNING -> LinePrefs.initialMessage(a).ifBlank { "Ждёт сети или очереди системы — продолжится сама." }
+                else -> LinePrefs.initialMessage(a)
+            }
+            if (detail.isNotBlank()) box.addView(v.hint(detail).apply { maxLines = 3 })
+            if (status == LinePrefs.Initial.RUNNING) box.addView(v.hint("Сначала баланс, начисления и блокировки по всем номерам, затем тарифы, пакеты, услуги и остальное. " +
+                "Обрыв связи не страшен: продолжится само. Обычное обновление включится после загрузки."))
+
+            val buttons = ChipGroup(a).apply { chipSpacingHorizontal = v.px(6); setPadding(0, v.px(8), 0, 0) }
+            fun action(t: String, f: () -> Unit) = buttons.addView(v.chip(t, checkable = false).apply { setOnClickListener { f() } })
+            when (status) {
+                LinePrefs.Initial.RUNNING -> if (running) action("Пауза") { LineSync.stop(a) } else action("Продолжить") { LineSync.startInitial(a) }
+                LinePrefs.Initial.FAILED -> {
+                    action("Повторить") { LineSync.startInitial(a, reset = true) }
+                    action("Настройки МТС") { openScreen(Intent(a, SettingsActivity::class.java)) }
+                }
+                LinePrefs.Initial.DONE -> action("Понятно") { LinePrefs.dismissInitial(a); refresh() }
+                LinePrefs.Initial.NONE -> Unit
+            }
+            action("Журнал") { openScreen(Intent(a, JournalActivity::class.java)) }
+            box.addView(buttons)
         }
     }
 

@@ -10,19 +10,23 @@ import androidx.core.widget.NestedScrollView
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.button.MaterialButton
-import com.google.android.material.checkbox.MaterialCheckBox
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.slider.Slider
+import ru.mycheckin.passport.mts.LineCategory
 import ru.mycheckin.passport.mts.LinePlanner
+import ru.mycheckin.passport.mts.LineSchedule
 import ru.mycheckin.passport.mts.LineRow
-import ru.mycheckin.passport.mts.LineScope
 import ru.mycheckin.passport.mts.LineSection
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/** Настройки фонового обновления: как часто, через какую сеть, с каким темпом и какие сведения. */
+/**
+ * Настройки загрузки сведений: первичная загрузка, период обновления каждой категории,
+ * сеть и темп. Фон всегда оставляет часть лимита экранам приложения.
+ */
 object LineSettingsSheet {
 
     fun show(a: Activity, onSaved: () -> Unit) {
@@ -31,77 +35,110 @@ object LineSettingsSheet {
         val dialog = BottomSheetDialog(a)
         val col = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; setPadding(v.px(20), v.px(8), v.px(20), v.px(16)) }
 
-        var interval = LinePrefs.intervalHours(a)
+        var schedule = LinePrefs.schedule(a)
         var wifi = LinePrefs.wifiOnly(a)
         var perMinute = LinePrefs.perMinute(a)
-        var ttl = LinePrefs.ttlFactor(a)
-        var autoNumbers = LinePrefs.autoNumbers(a)
-        val sections = LinePrefs.sections(a).toMutableSet()
+        var initialPerMinute = LinePrefs.initialPerMinute(a)
 
-        val estimate = v.hint("")
         val sims = SimDb.get(a).all().filter { it.inMts && it.msisdn.length == 11 }
         val accounts = sims.map { it.accountNo }.filter { it.isNotEmpty() }.distinct().size
-        fun updateEstimate() {
+        val estimate = v.hint("")
+        val runEvery = v.hint("")
+        fun update() {
+            val sections = schedule.sections
             val cost = LinePlanner.fullCost(sims.size, accounts, sections)
-            val minutes = cost / perMinute + 1
-            val perNumber = sections.count { it.scope == LineScope.NUMBER }
-            estimate.text = "Полное обновление ${sims.size} номеров: около $cost вызовов ($perNumber на номер), ≈ $minutes мин в фоне. " +
-                "Обычно запрашивается только устаревшее — намного меньше."
+            estimate.text = "Полная загрузка ${sims.size} номеров: около $cost вызовов, ≈ ${cost / initialPerMinute + 1} мин " +
+                "в первичной загрузке. Дальше запрашивается только то, что устарело по своему периоду."
+            val every = schedule.runEveryMinutes
+            runEvery.text = if (every == 0) "Фоновое обновление выключено: все категории — «Выкл.»"
+            else "Фон запускается раз в ${LineCategory.periodTitle(every).lowercase().removePrefix("раз в ")} — по самой частой категории " +
+                "(не чаще 15 мин). Каждый раз запрашивается только устаревшее."
         }
 
-        col.addView(ui.text("Фоновое обновление", 20f, bold = true).apply { setPadding(0, v.px(4), 0, v.px(4)) })
-        col.addView(v.hint("Сведения обновляются сами, даже когда приложение закрыто. Экраны приложения при этом работают без задержек: " +
-            "фон использует только часть лимита вызовов."))
+        col.addView(ui.text("Загрузка сведений МТС", 20f, bold = true).apply { setPadding(0, v.px(4), 0, v.px(4)) })
 
-        col.addView(v.label("Как часто"))
-        val intervals = listOf(0 to "Вручную", 1 to "1 ч", 3 to "3 ч", 6 to "6 ч", 12 to "12 ч", 24 to "Сутки")
-        val ig = v.chipGroup(single = true, required = true)
-        intervals.forEach { (h, t) -> ig.addView(v.chip(t, checked = h == interval).apply { setOnClickListener { interval = h } }) }
-        col.addView(ig)
+        // ---- Первичная загрузка ----
+        col.addView(v.label("Первичная загрузка"))
+        val st = LinePrefs.initial(a)
+        col.addView(v.hint(when (st) {
+            LinePrefs.Initial.NONE -> "Ещё не выполнялась. Загрузит всё по всем номерам, затем включится обычное обновление."
+            LinePrefs.Initial.RUNNING -> (if (LinePrefs.initialPaused(a)) "На паузе. " else "Идёт. ") + LinePrefs.initialMessage(a)
+            LinePrefs.Initial.DONE -> "Завершена ${SimFormat.time(LinePrefs.initialFinished(a))}. ${LinePrefs.initialMessage(a)}"
+            LinePrefs.Initial.FAILED -> "Остановлена: ${LinePrefs.initialMessage(a)}"
+        }))
+        col.addView(MaterialButton(a, null, com.google.android.material.R.attr.materialButtonOutlinedStyle).apply {
+            text = when (st) {
+                LinePrefs.Initial.NONE -> "Начать первичную загрузку"
+                LinePrefs.Initial.RUNNING -> "Продолжить сейчас"
+                else -> "Загрузить недостающее заново"
+            }
+            layoutParams = LinearLayout.LayoutParams(-2, -2).apply { topMargin = v.px(6) }
+            setOnClickListener { LineSync.startInitial(a, reset = st != LinePrefs.Initial.RUNNING); dialog.dismiss(); onSaved() }
+        })
 
+        // ---- Периоды по категориям ----
+        col.addView(v.label("Как часто обновлять"))
+        col.addView(v.hint("Свой период для каждой категории сведений. «Выкл.» — не загружать в фоне (в карточке номера по кнопке «Обновить» загрузится всё)."))
+        for (c in LineCategory.entries) {
+            val row = LinearLayout(a).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = android.view.Gravity.CENTER_VERTICAL
+                setPadding(0, v.px(8), 0, v.px(4))
+            }
+            val texts = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL }
+            texts.addView(ui.text(c.title, 15f))
+            texts.addView(v.hint(c.hint))
+            row.addView(texts, LinearLayout.LayoutParams(0, -2, 1f))
+            val btn = MaterialButton(a, null, com.google.android.material.R.attr.materialButtonOutlinedStyle).apply {
+                text = LineCategory.periodTitle(schedule.of(c))
+                minWidth = v.px(112)
+            }
+            btn.setOnClickListener {
+                val options = LineCategory.PERIODS
+                val current = options.indexOf(schedule.of(c)).coerceAtLeast(0)
+                MaterialAlertDialogBuilder(a).setTitle(c.title)
+                    .setSingleChoiceItems(options.map { LineCategory.periodTitle(it) }.toTypedArray(), current) { d, i ->
+                        schedule = schedule.with(c, options[i])
+                        btn.text = LineCategory.periodTitle(options[i])
+                        update(); d.dismiss()
+                    }.setNegativeButton("Отмена", null).show()
+            }
+            row.addView(btn)
+            col.addView(row)
+        }
+        col.addView(runEvery)
+        col.addView(MaterialButton(a, null, com.google.android.material.R.attr.borderlessButtonStyle).apply {
+            text = "Вернуть периоды по умолчанию"
+            setOnClickListener { dialog.dismiss(); LinePrefs.save(a, LineSchedule(), wifi, perMinute, initialPerMinute); LineSync.schedule(a); show(a, onSaved) }
+        })
+
+        // ---- Сеть и темп ----
+        col.addView(v.label("Сеть"))
         col.addView(MaterialSwitch(a).apply {
-            text = "Только по Wi-Fi"
+            text = "Обновлять в фоне только по Wi-Fi"
             isChecked = wifi
             setOnCheckedChangeListener { _, on -> wifi = on }
-            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = v.px(8) }
         })
-        col.addView(MaterialSwitch(a).apply {
-            text = "Раз в сутки обновлять список номеров и SIM"
-            isChecked = autoNumbers
-            setOnCheckedChangeListener { _, on -> autoNumbers = on }
-        })
+        col.addView(v.hint("Первичная загрузка идёт через любую сеть: объём небольшой (килобайты на номер)."))
 
-        col.addView(v.label("Свежесть сведений"))
-        val freshness = listOf(0.5 to "Чаще", 1.0 to "Обычно", 2.0 to "Экономно")
-        val fg = v.chipGroup(single = true, required = true)
-        freshness.forEach { (k, t) -> fg.addView(v.chip(t, checked = k == ttl).apply { setOnClickListener { ttl = k } }) }
-        col.addView(fg)
-        col.addView(v.hint("«Обычно»: баланс, блокировки и роуминг — раз в час, пакеты — раз в 3 ч, услуги — раз в 12 ч, тариф и бюджет — раз в сутки, тип SIM — раз в неделю."))
-
-        val tempo = v.label("Темп фона: $perMinute вызовов в минуту")
+        val tempo = v.label("Темп обновления: $perMinute вызовов в минуту")
         col.addView(tempo)
         col.addView(Slider(a).apply {
             valueFrom = 30f; valueTo = 250f; stepSize = 10f
             value = ((perMinute / 10) * 10).toFloat().coerceIn(30f, 250f)
-            addOnChangeListener { _, x, _ -> perMinute = x.toInt(); tempo.text = "Темп фона: $perMinute вызовов в минуту"; updateEstimate() }
+            addOnChangeListener { _, x, _ -> perMinute = x.toInt(); tempo.text = "Темп обновления: $perMinute вызовов в минуту" }
         })
-        col.addView(v.hint("Лимит тарифа — 300 в минуту на доступ. Остаток всегда остаётся экранам приложения."))
-
-        col.addView(v.label("Что обновлять"))
-        LineSection.entries.forEach { s ->
-            col.addView(MaterialCheckBox(a).apply {
-                text = s.title + "  ·  " + when {
-                    s.ttlMinutes < 60 * 24 -> "раз в ${s.ttlMinutes / 60} ч"
-                    s.ttlMinutes < 60 * 24 * 7 -> "раз в сутки"
-                    else -> "раз в неделю"
-                }
-                isChecked = s in sections
-                setOnCheckedChangeListener { _, on -> if (on) sections += s else sections -= s; updateEstimate() }
-            })
-        }
+        val tempoInitial = v.label("Темп первичной загрузки: $initialPerMinute вызовов в минуту")
+        col.addView(tempoInitial)
+        col.addView(Slider(a).apply {
+            valueFrom = 30f; valueTo = 260f; stepSize = 10f
+            value = ((initialPerMinute / 10) * 10).toFloat().coerceIn(30f, 260f)
+            addOnChangeListener { _, x, _ -> initialPerMinute = x.toInt(); tempoInitial.text = "Темп первичной загрузки: $initialPerMinute вызовов в минуту"; update() }
+        })
+        col.addView(v.hint("Лимит тарифа — 300 в минуту на доступ, приложение держит не больше 280. Разница остаётся экранам: работа в приложении не ждёт фон."))
+        col.addView(v.label("Оценка"))
         col.addView(estimate)
 
-        // Расход лимита за месяц по доступам
+        // ---- Расход и последнее обновление ----
         val usage = MtsService.accounts(a).filter { it.isConfigured }.joinToString("\n") { acc ->
             val l = MtsService.limiter(a, acc.id)
             "${acc.title.ifBlank { "Доступ" }}: ${LineFormat.number(l.usedThisMonth().toDouble())} из ${LineFormat.number(l.monthlyLimit.toDouble())} вызовов за месяц"
@@ -114,10 +151,11 @@ object LineSettingsSheet {
             text = "Сохранить"
             layoutParams = LinearLayout.LayoutParams(-1, -2).apply { setMargins(v.px(16), v.px(8), v.px(16), v.px(12)) }
             setOnClickListener {
-                LinePrefs.save(a, interval, wifi, perMinute, ttl, autoNumbers, sections.ifEmpty { setOf(LineSection.BALANCE) })
-                Journal.event(a, LogLevel.INFO, LogCategory.SETTINGS, "Фоновое обновление сведений",
-                    "Интервал: ${if (interval == 0) "вручную" else "$interval ч"}, Wi-Fi: ${if (wifi) "только" else "любая сеть"}, " +
-                        "темп: $perMinute/мин, разделов: ${sections.size}")
+                LinePrefs.save(a, schedule, wifi, perMinute, initialPerMinute)
+                Journal.event(a, LogLevel.INFO, LogCategory.SETTINGS, "Загрузка сведений МТС: настройки",
+                    LineCategory.entries.joinToString("\n") { "${it.title}: ${LineCategory.periodTitle(schedule.of(it))}" } +
+                        "\nWi-Fi: ${if (wifi) "только" else "любая сеть"}, темп: $perMinute/мин, первичная загрузка: $initialPerMinute/мин")
+                LineSync.schedule(a)
                 dialog.dismiss()
                 onSaved()
             }
@@ -127,10 +165,10 @@ object LineSettingsSheet {
             addView(NestedScrollView(a).apply { addView(col) }, LinearLayout.LayoutParams(-1, 0, 1f))
             addView(save)
         }
-        dialog.setContentView(root, ViewGroup.LayoutParams(-1, (a.resources.displayMetrics.heightPixels * 0.88).toInt()))
+        dialog.setContentView(root, ViewGroup.LayoutParams(-1, (a.resources.displayMetrics.heightPixels * 0.9).toInt()))
         dialog.behavior.state = BottomSheetBehavior.STATE_EXPANDED
         dialog.behavior.skipCollapsed = true
-        updateEstimate()
+        update()
         dialog.show()
     }
 }

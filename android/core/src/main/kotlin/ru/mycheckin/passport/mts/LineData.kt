@@ -419,14 +419,101 @@ object LineSearch {
 // План обновления
 // ---------------------------------------------------------------------------------------------
 
+/** Что известно о разделе по номеру или счёту. */
+enum class SectionStatus { LOADED, UNAVAILABLE, FAILED }
+
+/**
+ * Категории сведений с настраиваемым периодом обновления. [defaultMinutes] — по умолчанию,
+ * 0 — не обновлять в фоне. NUMBERS — список номеров и SIM (структура абонента), без разделов.
+ */
+enum class LineCategory(val title: String, val hint: String, val sections: Set<LineSection>, val defaultMinutes: Int) {
+    NUMBERS("Список номеров и SIM", "Новые и пропавшие номера, смена SIM-карты, контракты", emptySet(), 24 * 60),
+    BALANCE("Баланс и счёт", "Баланс, порог блокировки, неоплаченные счета, обещанный платёж",
+        setOf(LineSection.BALANCE, LineSection.UNPAID, LineSection.PROMISED), 60),
+    BLOCKS("Блокировки", "Добровольные, принудительные, по неоплате", setOf(LineSection.BLOCKS), 60),
+    LOCATION("Роуминг", "В какой стране номер", setOf(LineSection.LOCATION), 60),
+    CHARGES("Начисления за месяц", "Сколько начислено с начала месяца", setOf(LineSection.CHARGES), 3 * 60),
+    COUNTERS("Остатки пакетов", "Минуты, SMS, интернет", setOf(LineSection.COUNTERS), 3 * 60),
+    COMMENTS("Комментарии", "На номерах и лицевых счетах", setOf(LineSection.COMMENT, LineSection.ACCOUNT_COMMENT), 6 * 60),
+    SERVICES("Услуги", "Подключённые услуги и их стоимость", setOf(LineSection.SERVICES), 12 * 60),
+    TARIFF("Тариф и абонплата", "Тариф, плата сейчас и со следующего периода", setOf(LineSection.TARIFF, LineSection.TARIFF_FEE), 24 * 60),
+    FORWARDING("Переадресация", "Правила переадресации звонков", setOf(LineSection.FORWARDING), 24 * 60),
+    BUDGET("Корпоративный бюджет", "Правила списания по номеру и счёту", setOf(LineSection.BUDGET, LineSection.ACCOUNT_BUDGET), 24 * 60),
+    SIM_TYPE("Тип SIM-карты", "Пластиковая или eSIM", setOf(LineSection.SIM_TYPE), 7 * 24 * 60);
+
+    companion object {
+        /** Варианты периода, минуты (0 — выкл.). */
+        val PERIODS = listOf(0, 15, 30, 60, 3 * 60, 6 * 60, 12 * 60, 24 * 60, 3 * 24 * 60, 7 * 24 * 60)
+
+        fun of(section: LineSection): LineCategory = entries.first { section in it.sections }
+
+        fun periodTitle(minutes: Int): String = when {
+            minutes <= 0 -> "Выкл."
+            minutes < 60 -> "$minutes мин"
+            minutes < 24 * 60 -> "${minutes / 60} ч"
+            minutes == 24 * 60 -> "Раз в сутки"
+            minutes == 7 * 24 * 60 -> "Раз в неделю"
+            else -> "Раз в ${minutes / (24 * 60)} дн."
+        }
+    }
+}
+
+/** Периоды обновления по категориям. */
+data class LineSchedule(val minutes: Map<LineCategory, Int> = LineCategory.entries.associateWith { it.defaultMinutes }) {
+    fun of(c: LineCategory): Int = minutes[c] ?: c.defaultMinutes
+    fun enabled(c: LineCategory): Boolean = of(c) > 0
+
+    /** Срок свежести каждого включённого раздела. */
+    val ttl: Map<LineSection, Long> get() = LineSection.entries.mapNotNull { s ->
+        of(LineCategory.of(s)).takeIf { it > 0 }?.let { s to it * 60_000L }
+    }.toMap()
+
+    val sections: Set<LineSection> get() = ttl.keys
+
+    /**
+     * Как часто запускать фон: по самой частой включённой категории, не чаще раза в 15 минут
+     * (меньше WorkManager не позволяет). 0 — всё выключено.
+     */
+    val runEveryMinutes: Int get() = LineCategory.entries.map { of(it) }.filter { it > 0 }.minOrNull()?.coerceAtLeast(15) ?: 0
+
+    fun with(c: LineCategory, m: Int) = copy(minutes = minutes + (c to m))
+
+    fun toJson(): String = Json.write(minutes.mapKeys { it.key.name }.mapValues { it.value.toLong() })
+
+    companion object {
+        fun fromJson(text: String?): LineSchedule {
+            val j = Json.parseOrNull(text.orEmpty()) as? Map<*, *> ?: return LineSchedule()
+            return LineSchedule(LineCategory.entries.associateWith { c -> j.field(c.name).num()?.toInt() ?: c.defaultMinutes })
+        }
+    }
+}
+
 object LinePlanner {
     /** Одно задание: раздел и номера или лицевые счета (у пакетных разделов — до [LineSection.bulkSize]). */
     data class Job(val section: LineSection, val keys: List<String>)
 
     /**
+     * Порядок первичной загрузки: сначала самое нужное и дешёвое по всем номерам сразу
+     * (балансы счетов, пакетные начисления и комментарии, блокировки), потом остальное.
+     * Так даже прерванная загрузка уже даёт полезный список.
+     */
+    val INITIAL_ORDER = listOf(
+        LineSection.BALANCE, LineSection.CHARGES, LineSection.COMMENT, LineSection.ACCOUNT_COMMENT, LineSection.BLOCKS,
+        LineSection.UNPAID, LineSection.TARIFF, LineSection.COUNTERS, LineSection.LOCATION, LineSection.SERVICES,
+        LineSection.TARIFF_FEE, LineSection.FORWARDING, LineSection.PROMISED, LineSection.BUDGET, LineSection.ACCOUNT_BUDGET,
+        LineSection.SIM_TYPE,
+    )
+
+    private fun keysFor(s: LineSection, numbers: Map<String, String>): List<String> =
+        if (s.byAccount) numbers.values.filter { it.isNotBlank() }.distinct().sorted() else numbers.keys.sorted()
+
+    private fun jobsFor(s: LineSection, keys: List<String>): List<Job> =
+        if (s.bulk) keys.chunked(s.bulkSize).map { Job(s, it) } else keys.map { Job(s, listOf(it)) }
+
+    /**
      * Что запросить у МТС, чтобы сведения были свежими. [numbers] — номер → лицевой счёт.
+     * [ttl] — срок свежести включённых разделов (раздела нет — не обновляется).
      * [fetchedAt] — когда раздел по номеру или счёту получен в последний раз (null — ни разу).
-     * [ttlFactor] растягивает сроки свежести (2.0 — обновлять вдвое реже, экономнее).
      *
      * Порядок: лицевые счета (баланс важнее всего), затем пакетные запросы, затем номера —
      * сначала те, у которых сведения самые старые, все разделы номера подряд, чтобы карточка
@@ -434,35 +521,60 @@ object LinePlanner {
      */
     fun plan(
         numbers: Map<String, String>,
-        sections: Set<LineSection>,
+        ttl: Map<LineSection, Long>,
         fetchedAt: (LineSection, String) -> Long?,
         now: Long,
         force: Boolean = false,
-        ttlFactor: Double = 1.0,
     ): List<Job> {
         fun stale(s: LineSection, key: String): Boolean {
             if (force) return true
             val at = fetchedAt(s, key) ?: return true
-            return now - at >= (s.ttlMillis * ttlFactor).toLong()
+            return now - at >= (ttl[s] ?: return false)
         }
-        val ordered = LineSection.entries.filter { it in sections }
-        val accounts = numbers.values.filter { it.isNotBlank() }.distinct().sorted()
+        val ordered = LineSection.entries.filter { it in ttl.keys }
         val msisdns = numbers.keys.sorted()
         val jobs = mutableListOf<Job>()
 
-        for (s in ordered.filter { it.scope == LineScope.ACCOUNT }) {
-            accounts.filter { stale(s, it) }.forEach { jobs += Job(s, listOf(it)) }
-        }
-        for (s in ordered.filter { it.bulk }) {
-            val keys = (if (s.byAccount) accounts else msisdns).filter { stale(s, it) }
-            keys.chunked(s.bulkSize).forEach { jobs += Job(s, it) }
-        }
+        for (s in ordered.filter { it.scope == LineScope.ACCOUNT }) jobs += jobsFor(s, keysFor(s, numbers).filter { stale(s, it) })
+        for (s in ordered.filter { it.bulk }) jobs += jobsFor(s, keysFor(s, numbers).filter { stale(s, it) })
         val perNumber = ordered.filter { it.scope == LineScope.NUMBER }
         val byAge = msisdns.map { m -> m to perNumber.filter { stale(it, m) } }
             .filter { it.second.isNotEmpty() }
             .sortedBy { (m, ss) -> ss.minOf { fetchedAt(it, m) ?: 0L } }
         for ((m, ss) in byAge) ss.forEach { jobs += Job(it, listOf(m)) }
         return jobs
+    }
+
+    /**
+     * Первичная загрузка: всё, чего ещё нет или что не загрузилось из-за сбоя ([SectionStatus.FAILED]),
+     * по разделам в порядке [INITIAL_ORDER]. Уже полученное и недоступное для номера не запрашивается —
+     * поэтому загрузку можно прерывать и продолжать сколько угодно раз без лишних вызовов.
+     */
+    fun initial(numbers: Map<String, String>, sections: Set<LineSection>, status: (LineSection, String) -> SectionStatus?): List<Job> =
+        INITIAL_ORDER.filter { it in sections }.flatMap { s ->
+            jobsFor(s, keysFor(s, numbers).filter { k -> status(s, k).let { it == null || it == SectionStatus.FAILED } })
+        }
+
+    /** Насколько полны сведения: сколько пар «раздел — номер/счёт» загружено, недоступно, со сбоем, ещё нет. */
+    data class Coverage(val total: Int, val loaded: Int, val unavailable: Int, val failed: Int) {
+        val missing: Int get() = total - loaded - unavailable - failed
+        val done: Int get() = loaded + unavailable
+        val complete: Boolean get() = done >= total
+        val percent: Int get() = if (total == 0) 100 else done * 100 / total
+    }
+
+    fun coverage(numbers: Map<String, String>, sections: Set<LineSection>, status: (LineSection, String) -> SectionStatus?): Coverage {
+        var total = 0; var loaded = 0; var unavailable = 0; var failed = 0
+        for (s in sections) for (k in keysFor(s, numbers)) {
+            total++
+            when (status(s, k)) {
+                SectionStatus.LOADED -> loaded++
+                SectionStatus.UNAVAILABLE -> unavailable++
+                SectionStatus.FAILED -> failed++
+                null -> Unit
+            }
+        }
+        return Coverage(total, loaded, unavailable, failed)
     }
 
     /** Сколько вызовов API займёт полное обновление (для подсказки на экране). */

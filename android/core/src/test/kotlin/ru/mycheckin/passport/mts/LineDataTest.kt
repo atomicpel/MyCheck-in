@@ -136,6 +136,8 @@ class LineDataTest {
         assertEquals("1.5E7", Json.write(1.5e7))
     }
 
+    private fun ttl(vararg ss: LineSection) = ss.associateWith { it.ttlMillis }
+
     @Test fun plannerOrdersAndSkipsFresh() {
         val numbers = mapOf("79160000002" to "A1", "79160000001" to "A1", "79160000003" to "A2")
         val fetched = mapOf(
@@ -144,7 +146,7 @@ class LineDataTest {
             (LineSection.BLOCKS to "79160000002") to now - 30 * 60_000,   // свежий
             (LineSection.BLOCKS to "79160000003") to now - 5 * 3_600_000, // самый старый
         )
-        val jobs = LinePlanner.plan(numbers, setOf(LineSection.BALANCE, LineSection.COMMENT, LineSection.BLOCKS),
+        val jobs = LinePlanner.plan(numbers, ttl(LineSection.BALANCE, LineSection.COMMENT, LineSection.BLOCKS),
             { s, k -> fetched[s to k] }, now)
         assertEquals(listOf(
             LinePlanner.Job(LineSection.BALANCE, listOf("A2")),
@@ -152,19 +154,69 @@ class LineDataTest {
             LinePlanner.Job(LineSection.BLOCKS, listOf("79160000003")),
             LinePlanner.Job(LineSection.BLOCKS, listOf("79160000001")),
         ), jobs)
-        // Экономный режим: сроки вдвое длиннее — блокировки двухчасовой давности ещё свежие.
-        val lazy = LinePlanner.plan(numbers, setOf(LineSection.BLOCKS), { s, k -> fetched[s to k] }, now, ttlFactor = 3.0)
+        // Свой период: блокировки раз в 3 ч — двухчасовые ещё свежие.
+        val lazy = LinePlanner.plan(numbers, mapOf(LineSection.BLOCKS to 3 * 3_600_000L), { s, k -> fetched[s to k] }, now)
         assertEquals(listOf(LinePlanner.Job(LineSection.BLOCKS, listOf("79160000003"))), lazy)
         // Принудительно: 2 счёта + 1 пакетный запрос комментариев + 3 номера.
-        assertEquals(2 + 1 + 3, LinePlanner.plan(numbers, setOf(LineSection.BALANCE, LineSection.BLOCKS, LineSection.COMMENT),
+        assertEquals(2 + 1 + 3, LinePlanner.plan(numbers, ttl(LineSection.BALANCE, LineSection.BLOCKS, LineSection.COMMENT),
             { s, k -> fetched[s to k] }, now, force = true).size)
     }
 
     @Test fun plannerChunksBulk() {
         val numbers = (1..650).associate { "7916%07d".format(it) to "A" }
-        val jobs = LinePlanner.plan(numbers, setOf(LineSection.COMMENT, LineSection.CHARGES), { _, _ -> null }, now)
+        val jobs = LinePlanner.plan(numbers, ttl(LineSection.COMMENT, LineSection.CHARGES), { _, _ -> null }, now)
         assertEquals(listOf(1, 3), jobs.groupBy { it.section }.let { listOf(it.getValue(LineSection.CHARGES).size, it.getValue(LineSection.COMMENT).size) })
         assertEquals(300, jobs.first { it.section == LineSection.COMMENT }.keys.size)
         assertEquals(1 + 3 + 650 * 2 + 2, LinePlanner.fullCost(650, 2, setOf(LineSection.CHARGES, LineSection.COMMENT, LineSection.BLOCKS, LineSection.TARIFF, LineSection.BALANCE)))
+    }
+
+    @Test fun initialLoadIsSectionMajorAndResumable() {
+        val numbers = mapOf("79160000001" to "A1", "79160000002" to "A1")
+        val status = mutableMapOf<Pair<LineSection, String>, SectionStatus>()
+        val sections = setOf(LineSection.SIM_TYPE, LineSection.BLOCKS, LineSection.BALANCE, LineSection.COMMENT)
+        val first = LinePlanner.initial(numbers, sections) { s, k -> status[s to k] }
+        // Сначала баланс счёта и пакетные комментарии, затем блокировки по всем номерам, тип SIM — в конце.
+        assertEquals(listOf(
+            LinePlanner.Job(LineSection.BALANCE, listOf("A1")),
+            LinePlanner.Job(LineSection.COMMENT, listOf("79160000001", "79160000002")),
+            LinePlanner.Job(LineSection.BLOCKS, listOf("79160000001")),
+            LinePlanner.Job(LineSection.BLOCKS, listOf("79160000002")),
+            LinePlanner.Job(LineSection.SIM_TYPE, listOf("79160000001")),
+            LinePlanner.Job(LineSection.SIM_TYPE, listOf("79160000002")),
+        ), first)
+        // Загрузка прервалась: часть получена, одна — недоступна, одна — сбой.
+        status[LineSection.BALANCE to "A1"] = SectionStatus.LOADED
+        status[LineSection.COMMENT to "79160000001"] = SectionStatus.LOADED
+        status[LineSection.COMMENT to "79160000002"] = SectionStatus.LOADED
+        status[LineSection.BLOCKS to "79160000001"] = SectionStatus.UNAVAILABLE
+        status[LineSection.BLOCKS to "79160000002"] = SectionStatus.FAILED
+        val second = LinePlanner.initial(numbers, sections) { s, k -> status[s to k] }
+        assertEquals(listOf(LineSection.BLOCKS to "79160000002", LineSection.SIM_TYPE to "79160000001", LineSection.SIM_TYPE to "79160000002"),
+            second.map { it.section to it.keys.single() })
+        val cov = LinePlanner.coverage(numbers, sections) { s, k -> status[s to k] }
+        assertEquals(LinePlanner.Coverage(total = 7, loaded = 3, unavailable = 1, failed = 1), cov)
+        assertEquals(2, cov.missing)
+        assertEquals(57, cov.percent)
+        assertTrue(!cov.complete)
+    }
+
+    @Test fun scheduleByCategory() {
+        val d = LineSchedule()
+        assertEquals(60 * 60_000L, d.ttl[LineSection.BALANCE])
+        assertEquals(60 * 60_000L, d.ttl[LineSection.UNPAID])        // та же категория «Баланс и счёт»
+        assertEquals(7 * 24 * 60 * 60_000L, d.ttl[LineSection.SIM_TYPE])
+        assertEquals(60, d.runEveryMinutes)
+        val s = d.with(LineCategory.BLOCKS, 15).with(LineCategory.SIM_TYPE, 0)
+        assertEquals(15, s.runEveryMinutes)
+        assertTrue(LineSection.SIM_TYPE !in s.sections)
+        assertEquals(s, LineSchedule.fromJson(s.toJson()))
+        assertEquals(LineSchedule(), LineSchedule.fromJson("мусор"))
+        val off = LineSchedule(LineCategory.entries.associateWith { 0 })
+        assertEquals(0, off.runEveryMinutes)
+        assertTrue(off.sections.isEmpty())
+        // Каждый раздел — ровно в одной категории.
+        LineSection.entries.forEach { sec -> assertEquals(1, LineCategory.entries.count { sec in it.sections }) }
+        assertEquals("Раз в сутки", LineCategory.periodTitle(1440))
+        assertEquals("3 ч", LineCategory.periodTitle(180))
     }
 }
