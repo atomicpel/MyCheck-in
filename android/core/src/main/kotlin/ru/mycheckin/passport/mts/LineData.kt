@@ -48,6 +48,7 @@ enum class LineSection(val title: String, val scope: LineScope, val ttlMinutes: 
             LineChange.PROMISED -> setOf(BALANCE, PROMISED)
             LineChange.COMMENT -> setOf(COMMENT, ACCOUNT_COMMENT)
             LineChange.DOCUMENT -> emptySet()
+            LineChange.SIM -> setOf(SIM_TYPE, BLOCKS)
         }
     }
 }
@@ -55,7 +56,9 @@ enum class LineSection(val title: String, val scope: LineScope, val ttlMinutes: 
 /** Вид изменения, отправленного в МТС (для заявок и для того, что перечитать после выполнения). */
 enum class LineChange(val title: String) {
     SERVICE("Услуга"), BLOCK("Блокировка"), TARIFF("Тариф"), FORWARDING("Переадресация"),
-    PROMISED("Обещанный платёж"), COMMENT("Комментарий"), DOCUMENT("Документ на email");
+    PROMISED("Обещанный платёж"), COMMENT("Комментарий"), DOCUMENT("Документ на email"),
+    /** Замена SIM-карты или eSIM: статус — Operations/GetStatus, а не CheckRequestStatus. */
+    SIM("SIM-карта");
 
     companion object { fun of(name: String?) = entries.firstOrNull { it.name == name } }
 }

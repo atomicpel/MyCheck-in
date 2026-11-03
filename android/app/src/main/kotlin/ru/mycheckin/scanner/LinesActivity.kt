@@ -142,6 +142,9 @@ class LinesActivity : AppCompatActivity() {
 
         renderPresets()
         askNotifications()
+
+        // Последний собранный список — сразу, без ожидания; изменения подтянутся следом.
+        LineStore.get(this).lastRows?.let { rows = it; apply() }
     }
 
     override fun onStart() {
@@ -171,10 +174,15 @@ class LinesActivity : AppCompatActivity() {
 
     // ---- Данные ----
 
+    private var reloadAgain = false
+
     private fun reload() {
-        if (loading) return
+        if (loading) { reloadAgain = true; return }
         loading = true
+        reloadAgain = false
         lastReload = System.currentTimeMillis()
+        // Список ещё ни разу не собирался — крутим индикатор, а не показываем пустой экран.
+        if (rows.isEmpty()) refresh.isRefreshing = true
         io.execute {
             val r = runCatching { LineStore.get(this).rows(this) }.getOrDefault(emptyList())
             val cov = if (LinePrefs.initial(this) != LinePrefs.Initial.DONE || !LinePrefs.initialDismissed(this))
@@ -182,11 +190,13 @@ class LinesActivity : AppCompatActivity() {
             runOnUiThread {
                 loading = false
                 if (isDestroyed) return@runOnUiThread
+                refresh.isRefreshing = false
                 coverage = cov
                 initialCard.refresh()
                 rows = r
                 selected.retainAll(r.map { it.msisdn }.toSet())
                 apply()
+                if (reloadAgain) reload()
             }
         }
     }

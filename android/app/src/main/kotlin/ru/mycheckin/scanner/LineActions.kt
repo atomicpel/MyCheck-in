@@ -15,6 +15,7 @@ import ru.mycheckin.passport.mts.ProductItem
 import ru.mycheckin.passport.mts.PromisedPayment
 import ru.mycheckin.passport.mts.RateLimiter
 import ru.mycheckin.passport.mts.RequestStatus
+import ru.mycheckin.passport.mts.SpareSim
 import ru.mycheckin.passport.mts.StatementEvent
 import java.time.LocalDate
 
@@ -99,6 +100,22 @@ object LineActions {
 
     fun removeService(context: Context, msisdn: String, s: ProductItem) =
         change(context, msisdn, LineChange.SERVICE, "Отключить услугу «${s.name}»") { it.modifyProduct(msisdn, s.code, add = false) }
+
+    // ---- SIM-карта и eSIM ----
+
+    fun availableSims(context: Context, msisdn: String): List<SpareSim> =
+        act(context, LogCategory.LINES, "Свободные SIM-карты для замены", msisdn) { api, _, op ->
+            api.availableSims(msisdn).also { op.line("Свободных SIM-карт: ${it.size}") }
+        }
+
+    fun changeSim(context: Context, msisdn: String, sim: SpareSim) =
+        change(context, msisdn, LineChange.SIM, "Перенести номер на SIM-карту ${sim.iccid}") { it.changeSim(msisdn, sim.imsi) }
+
+    fun changeEsim(context: Context, msisdn: String, email: String) =
+        change(context, msisdn, LineChange.SIM, "Заменить SIM-карту на eSIM (QR-код на $email)") { it.changeEsim(msisdn, email) }
+
+    fun resendEsim(context: Context, msisdn: String, emails: List<String>) =
+        change(context, msisdn, LineChange.SIM, "QR-код eSIM повторно на ${emails.joinToString()}") { it.resendEsim(msisdn, emails) }
 
     // ---- Тариф ----
 

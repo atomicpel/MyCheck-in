@@ -227,4 +227,29 @@ class LineApiTest {
         assertEquals("1 234,5 ₽".replace(",5", ",50"), Money.format(1234.5))
         assertEquals("120 ₽", Money.format(120.0))
     }
+
+    /** Замена SIM и eSIM — по примерам из справки МТС. */
+    @Test fun simReplacement() {
+        val sims = LineParse.spareSims("""{"contract":123456789012,"hlrNum":"1","simList":[
+            {"iccId":"89701010000000000017","imsi":"250010000000001","puk1":null,"puk2":null},
+            {"iccId":"8970101000000000002","imsi":"250010000000002","puk1":null,"puk2":null},{"iccId":"x","imsi":""}]}""")
+        assertEquals(listOf(SpareSim("89701010000000000017", "250010000000001"), SpareSim("8970101000000000002", "250010000000002")), sims)
+        assertTrue(sims[0].matches("8970101000000000001"))    // отсканировано без контрольной цифры
+        assertTrue(sims[1].matches("89701010000000000025"))   // и наоборот
+        assertTrue(!sims[0].matches("123"))
+
+        val esim = LineParse.eventAck(HttpResponse(200,
+            """{"message":"Запрос успешно принят. Ожидайте QR-код eSIM на указанный адрес email.","eventId":"0b9c6c1a-1111-2222-3333-444455556666"}"""))
+        assertEquals("0b9c6c1a-1111-2222-3333-444455556666", esim.id)
+        assertEquals("0b9c6c1a-1111-2222-3333-444455556666", LineParse.eventAck(HttpResponse(200, "0b9c6c1a-1111-2222-3333-444455556666")).id)
+
+        val st = LineParse.operationStatus("""{"eventId":"e1","createDate":"2026-11-04 10:00:00+03","updateDate":"2026-11-04 10:05:00+03",
+            "operationCategory":"SIM","operationTypeCode":"ChangeSIM","operationStatusCode":"Faulted","externalSystemErrorCode":"E42",
+            "externalSystemMessage":"SIM-карта уже используется"}""", "e1")!!
+        assertTrue(st.failed)
+        assertEquals("SIM-карта уже используется", st.errorDescription)
+        assertEquals(4, st.updated?.dayOfMonth)
+        assertTrue(LineParse.operationStatus("""{"eventId":"e2","operationStatusCode":"Completed"}""", "e2")!!.done)
+        assertNull(LineParse.operationStatus("{}", "e3"))
+    }
 }

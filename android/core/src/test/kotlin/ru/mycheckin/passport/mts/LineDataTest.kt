@@ -235,4 +235,20 @@ class LineDataTest {
         assertEquals("Отсутствует Группа КБ", LineErrors.describe("""{"message":"Отсутствует Группа КБ"}"""))
         assertEquals(24 * 60 * 60_000L, LineSchedule().ttl[LineSection.PROMISED])
     }
+
+    @Test fun digestRoundTrip() {
+        val full = snapshot(mapOf(
+            LineSection.FORWARDING to st("""[{"productCharacteristic":[{"name":"ForwardingAddress","value":"79990001122"},{"name":"ForwardingType","value":"CFNRY"},{"name":"NoReplyTimer","value":"20"}]}]"""),
+            LineSection.TARIFF to st("""{"productOffering":{"externalID":"0397","name":"Умный бизнес S","validFor":{"startDateTime":"2024-01-01T00:00:00"}}}"""),
+            LineSection.SIM_TYPE to st("""{"simType":"ESIM"}"""),
+            LineSection.BUDGET to StoredSection(null, now, "HTTP 400: Отсутствует Группа КБ", unavailable = true),
+            LineSection.SERVICES to st(null, error = "МТС ответил HTTP 503"),
+        ))
+        assertEquals(full, LineDigest.decode(LineDigest.encode(full)))
+        val empty = LineSnapshot("79160000001", "")
+        assertEquals(empty, LineDigest.decode(LineDigest.encode(empty)))
+        assertNull(LineDigest.decode("""{"v":0,"m":"7"}"""))     // другая версия — пересчитать
+        assertNull(LineDigest.decode("мусор"))
+        assertTrue(LineDigest.encode(full).length < 3000)
+    }
 }

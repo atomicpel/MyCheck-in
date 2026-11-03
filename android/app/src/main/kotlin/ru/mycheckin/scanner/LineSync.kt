@@ -161,7 +161,19 @@ object LineSync {
 
     fun addListener(l: () -> Unit) { listeners += l }
     fun removeListener(l: () -> Unit) { listeners -= l }
-    private fun changed() = main.post { listeners.forEach { runCatching { it() } } }
+    private val notifyPending = AtomicBoolean(false)
+
+    /**
+     * Сообщить экранам об изменениях. Не чаще 3 раз в секунду: при загрузке в три потока события идут
+     * десятками в секунду, и перерисовка на каждое подтормаживала экран.
+     */
+    private fun changed() {
+        if (!notifyPending.compareAndSet(false, true)) return
+        main.postDelayed({
+            notifyPending.set(false)
+            listeners.forEach { runCatching { it() } }
+        }, 300)
+    }
 
     private fun setState(s: State) { state = s; changed() }
 
@@ -678,7 +690,9 @@ object LineSync {
             }
             val st = try {
                 val sim = SimDb.get(app).byMsisdn(r.msisdn) ?: SimRecord(msisdn = r.msisdn)
-                LineApi(MtsService.quietClient(app, SimActions.accountFor(app, sim))).requestStatus(r.msisdn, r.eventId)
+                val api = LineApi(MtsService.quietClient(app, SimActions.accountFor(app, sim)))
+                // Замена SIM/eSIM проверяется своим методом (Operations/GetStatus).
+                if (r.kind == LineChange.SIM) api.operationStatus(r.eventId) else api.requestStatus(r.msisdn, r.eventId)
             } catch (e: Exception) {
                 store.updateRequest(r.id, r.status, e.message.orEmpty()); left = true; continue
             }
@@ -689,6 +703,8 @@ object LineSync {
                 st.done -> {
                     val keys = listOf(r.msisdn) + listOf(r.accountNo).filter { it.isNotEmpty() }
                     store.markStale(keys, LineSection.affectedBy(r.kind))
+                    // Новая SIM — новый ICCID в учёте: список номеров обновится при ближайшем фоновом обновлении.
+                    if (r.kind == LineChange.SIM) LinePrefs.setLastNumbersSync(app, 0)
                     runCatching { refreshNumber(app, r.msisdn, LineSection.affectedBy(r.kind)) }
                     Journal.event(app, LogLevel.OK, LogCategory.CHECK, "Заявка выполнена: ${r.title}", "Номер заявки: ${r.eventId}", msisdn = r.msisdn)
                 }

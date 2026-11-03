@@ -65,6 +65,18 @@ class LineDetailActivity : AppCompatActivity() {
     private var requests: List<LineRequest> = emptyList()
     private var busy = 0
 
+    /** Штрихкод новой SIM-карты: ICCID → свободная SIM контракта → замена. */
+    private var pendingSims: List<ru.mycheckin.passport.mts.SpareSim> = emptyList()
+    private val scanIccid = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) { r ->
+        if (r.resultCode != RESULT_OK) return@registerForActivityResult
+        val code = r.data?.getStringExtra(CodeScanActivity.RESULT_VALUE).orEmpty()
+        val found = pendingSims.firstOrNull { it.matches(code) }
+        if (found != null) confirmSim(found)
+        else LineDialogs.message(this, "SIM-карта не найдена",
+            "Карты с ICCID $code нет среди свободных SIM-карт контракта (${pendingSims.size} шт.). " +
+                "Проверьте, что SIM-карта выдана на ваш контракт, или выберите её из списка.")
+    }
+
     private val syncListener: () -> Unit = { if (!isDestroyed && !LineSync.state.running) load() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -253,7 +265,10 @@ class LineDetailActivity : AppCompatActivity() {
         val contract = sim?.contractId?.takeIf { it.isNotEmpty() }?.let { SimDb.get(this).contract(it)?.title ?: it }
 
         // Заголовок
-        card(sim?.fullName?.ifBlank { null } ?: "Владелец не указан", listOf(LineSection.SIM_TYPE)) {
+        card(sim?.fullName?.ifBlank { null } ?: "Владелец не указан", listOf(LineSection.SIM_TYPE), listOfNotNull(
+            "Заменить SIM-карту" to { replaceSim() },
+            if (s.isEsim) "QR-код eSIM повторно" to { resendQr() } else null,
+        )) {
             row("Номер", SimFormat.phone(msisdn)) { copy(msisdn) }
             contract?.let { row("Контракт", it) }
             if (accountNo.isNotEmpty()) row("Лицевой счёт", accountNo) { copy(accountNo) }
@@ -435,6 +450,73 @@ class LineDetailActivity : AppCompatActivity() {
     }
 
     // ---- Действия ----
+
+    // ---- Замена SIM-карты ----
+
+    private fun replaceSim() {
+        val esim = snap?.isEsim == true
+        val items = arrayOf("На пластиковую SIM-карту", "На eSIM (QR-код на email)")
+        MaterialAlertDialogBuilder(this).setTitle("Заменить SIM-карту ${SimFormat.phone(msisdn)}")
+            .setItems(items) { _, which ->
+                when {
+                    which == 0 && esim -> LineDialogs.message(this, "Переход с eSIM на пластиковую SIM",
+                        "МТС Бизнес API переносит номер на пластиковую SIM-карту только с другой пластиковой. " +
+                            "Перевести номер с eSIM на пластиковую SIM через API нельзя — это делается в салоне МТС " +
+                            "или через персонального менеджера.")
+                    which == 0 -> choosePlastic()
+                    else -> askEsim()
+                }
+            }.setNegativeButton("Отмена", null).show()
+    }
+
+    private fun choosePlastic() {
+        mts("Ищу свободные SIM-карты контракта…", { LineActions.availableSims(this, msisdn) }) { list ->
+            if (list.isEmpty()) {
+                LineDialogs.message(this, "Нет свободных SIM-карт",
+                    "МТС не нашёл на контракте пустых SIM-карт для замены. Новую SIM-карту нужно сначала получить в МТС на ваш контракт.")
+                return@mts
+            }
+            pendingSims = list
+            MaterialAlertDialogBuilder(this).setTitle("Новая SIM-карта")
+                .setMessage("Свободных SIM-карт на контракте: ${list.size}. Отсканируйте штрихкод на новой карте или выберите её из списка.")
+                .setPositiveButton("Сканировать") { _, _ ->
+                    scanIccid.launch(Intent(this, CodeScanActivity::class.java).putExtra(CodeScanActivity.EXTRA_TARGET, CodeScanActivity.TARGET_ICCID))
+                }
+                .setNeutralButton("Из списка") { _, _ -> pick("Новая SIM-карта", list, { "ICCID ${it.iccid}" }) { confirmSim(it) } }
+                .setNegativeButton("Отмена", null).show()
+        }
+    }
+
+    private fun confirmSim(sim: ru.mycheckin.passport.mts.SpareSim) {
+        LineDialogs.confirm(this, "Перенести номер на новую SIM?",
+            "Номер ${SimFormat.phone(msisdn)} перейдёт на SIM-карту\nICCID ${sim.iccid}.\n\n" +
+                "Текущая SIM-карта перестанет работать сразу после выполнения заявки. Новую карту вставьте в телефон и перезагрузите его.",
+            "Заменить") {
+            mts("Отправляю заявку…", { LineActions.changeSim(this, msisdn, sim) }) { sent(it.id) }
+        }
+    }
+
+    private fun askEsim() {
+        LineDialogs.document(this, "Заменить на eSIM", withPeriod = false, formats = listOf("QR-код")) { email, _, _, _ ->
+            LineDialogs.confirm(this, "Заменить SIM-карту на eSIM?",
+                "Номер ${SimFormat.phone(msisdn)}. QR-код придёт на $email — отсканируйте его камерой телефона с поддержкой eSIM.\n\n" +
+                    "• Текущая SIM-карта перестанет работать — безвозвратно.\n" +
+                    "• На 24 часа на номере ограничения: SMS (в том числе от банков и Госуслуг) и часть платежей.\n" +
+                    "• Заменить на eSIM можно не чаще раза в месяц; eSIM привязана к телефону.",
+                "Заменить") {
+                mts("Отправляю заявку…", { LineActions.changeEsim(this, msisdn, email) }) { ack ->
+                    sent(ack.id)
+                    ack.message?.let { LineDialogs.message(this, "МТС принял заявку", it) }
+                }
+            }
+        }
+    }
+
+    private fun resendQr() {
+        LineDialogs.document(this, "QR-код eSIM повторно", withPeriod = false, formats = listOf("QR-код")) { email, _, _, _ ->
+            mts("Отправляю…", { LineActions.resendEsim(this, msisdn, listOf(email)) }) { sent(it.id) }
+        }
+    }
 
     private fun voluntaryBlock(on: Boolean) {
         LineDialogs.confirm(this, if (on) "Включить добровольную блокировку?" else "Снять добровольную блокировку?",

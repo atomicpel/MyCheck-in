@@ -565,14 +565,22 @@ class SimListActivity : AppCompatActivity() {
                 openScreen(Intent(this@SimListActivity, SimEditActivity::class.java).putExtra(SimEditActivity.EXTRA_ID, s.id))
             }
 
-            if (position > lastAnimated) {
+            // Появление — только у первых карточек экрана. Иначе карточка всегда видима: анимация списка
+            // (смена контракта, DiffUtil) могла прервать появление и оставить карточку прозрачной —
+            // номера «пропадали» до повторного нажатия.
+            val v = h.itemView
+            if (position > lastAnimated && position < 12) {
                 lastAnimated = position
-                val v = h.itemView
                 v.alpha = 0f
                 v.translationY = dp(28).toFloat()
                 v.animate().alpha(1f).translationY(0f)
-                    .setStartDelay((position.coerceAtMost(8) * 35).toLong())
-                    .setDuration(320).setInterpolator(ease).start()
+                    .setStartDelay((position * 35).toLong())
+                    .setDuration(320).setInterpolator(ease)
+                    .withEndAction { v.alpha = 1f; v.translationY = 0f }
+                    .start()
+            } else if (v.animation == null) {
+                v.alpha = 1f
+                v.translationY = 0f
             }
         }
 
@@ -580,6 +588,12 @@ class SimListActivity : AppCompatActivity() {
             h.itemView.animate().cancel()
             h.itemView.alpha = 1f
             h.itemView.translationY = 0f
+        }
+
+        override fun onViewAttachedToWindow(h: VH) {
+            super.onViewAttachedToWindow(h)
+            // Подстраховка: карточка на экране не может остаться прозрачной после прерванной анимации.
+            if (h.itemView.alpha < 1f) h.itemView.postDelayed({ if (h.itemView.alpha < 1f) { h.itemView.alpha = 1f; h.itemView.translationY = 0f } }, 700)
         }
 
         private fun bindFace(h: VH, path: String) {

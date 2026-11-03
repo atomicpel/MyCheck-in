@@ -175,6 +175,16 @@ data class RequestStatus(
     val title: String get() = OperationResult.OPERATION_TITLES[status] ?: (status ?: "Нет сведений")
 }
 
+/** Свободная пластиковая SIM-карта контракта, на которую можно перенести номер. */
+data class SpareSim(val iccid: String, val imsi: String) {
+    /** Совпадает ли с отсканированным ICCID (на карте он бывает с контрольной цифрой и без неё). */
+    fun matches(scanned: String): Boolean {
+        val d = scanned.filter { it.isDigit() }
+        if (d.length < 6) return false
+        return iccid == d || iccid.startsWith(d) || d.startsWith(iccid) || iccid.endsWith(d)
+    }
+}
+
 /** Событие детализации: звонок, SMS, интернет, абонплата, платёж. */
 data class StatementEvent(
     val date: LocalDateTime?,
@@ -450,6 +460,26 @@ object LineParse {
         return keys.associateWith { k -> Json.write(byKey[k].orEmpty()) }
     }
 
+    /** Свободные SIM-карты для замены (`Resources/GetAvailableSIM`). */
+    fun spareSims(body: String): List<SpareSim> = json(body).field("simList").list().mapNotNull { s ->
+        val imsi = s.field("imsi").str()?.trim()?.ifBlank { null } ?: return@mapNotNull null
+        SpareSim(s.field("iccId").str()?.trim().orEmpty(), imsi)
+    }
+
+    /** Статус замены SIM/eSIM и правил корпоративного бюджета (`Operations/GetStatus`). */
+    fun operationStatus(body: String, id: String): RequestStatus? {
+        val j = json(body).items().firstOrNull() ?: return null
+        val status = j.field("operationStatusCode").str() ?: return null
+        return RequestStatus(
+            id = j.field("eventId").str() ?: id,
+            status = status,
+            category = j.field("operationCategory").str() ?: j.field("operationTypeCode").str(),
+            errorCode = j.field("externalSystemErrorCode").str()?.ifBlank { null },
+            errorDescription = j.field("externalSystemMessage").str()?.ifBlank { null },
+            updated = MtsDate.parse(j.field("updateDate").str()),
+        )
+    }
+
     /** Номер заявки из ответа на изменение: {"eventID": …}, просто строка, messageId/requestId или заголовок x-trace-id. */
     fun eventAck(r: HttpResponse): EventAck {
         val j = Json.parseOrNull(r.body.trim()) ?: r.body.trim().takeIf { it.isNotEmpty() && !it.startsWith("<") }
@@ -685,6 +715,30 @@ class LineApi(private val c: MtsClient) {
 
     fun simType(msisdn: String): String? = LineParse.simType(raw(LineSection.SIM_TYPE, msisdn))
 
+    // ---- Замена SIM-карты и eSIM ----
+
+    /** Свободные пластиковые SIM-карты контракта номера. [pattern] — начало ICCID и «%», или «%» — все. */
+    fun availableSims(msisdn: String, pattern: String = "%", top: Int = 500): List<SpareSim> =
+        LineParse.spareSims(c.request("POST", PATH_SIM_AVAILABLE, body = Json.write(linkedMapOf(
+            "Msisdn" to msisdn, "SearchPattern" to pattern, "SelectTopN" to top.toLong(),
+        )), safeToRepeat = true).body)
+
+    /** Перенести номер на пластиковую SIM-карту (IMSI — из [availableSims]). Старая SIM перестанет работать. */
+    fun changeSim(msisdn: String, newImsi: String): EventAck =
+        LineParse.eventAck(c.request("POST", PATH_SIM_CHANGE, body = Json.write(linkedMapOf("Msisdn" to msisdn, "newSimImsi" to newImsi))))
+
+    /** Заменить SIM-карту на eSIM: QR-код придёт на [email]. Не чаще раза в месяц; на сутки ограничения SMS и платежей. */
+    fun changeEsim(msisdn: String, email: String): EventAck =
+        LineParse.eventAck(c.request("POST", PATH_ESIM_CHANGE, body = Json.write(linkedMapOf("msisdn" to msisdn, "email" to email))))
+
+    /** Отправить QR-код действующей eSIM ещё раз. */
+    fun resendEsim(msisdn: String, emails: List<String>): EventAck =
+        LineParse.eventAck(c.request("POST", PATH_ESIM_RESEND, body = Json.write(linkedMapOf("msisdn" to msisdn, "emails" to emails)), safeToRepeat = true))
+
+    /** Статус замены SIM/eSIM по EventID. */
+    fun operationStatus(eventId: String): RequestStatus? =
+        LineParse.operationStatus(c.request("POST", PATH_OPERATION_STATUS, body = Json.write(mapOf("eventId" to eventId)), safeToRepeat = true).body, eventId)
+
     // ---- Комментарии ----
 
     fun comments(msisdns: List<String>): Map<String, String> {
@@ -779,6 +833,11 @@ class LineApi(private val c: MtsClient) {
         const val PATH_ACC_COMMENTS_GET = "/Service/GetCommentsByAccount"
         const val PATH_ACC_COMMENTS_SET = "/Service/SetCommentsByAccount"
         const val PATH_SIM_TYPE = "/Resources/SIMType"
+        const val PATH_SIM_AVAILABLE = "/Resources/GetAvailableSIM"
+        const val PATH_SIM_CHANGE = "/Resources/ChangeSIMCard"
+        const val PATH_ESIM_CHANGE = "/Resources/ChangeESIM"
+        const val PATH_ESIM_RESEND = "/Resources/ResendESIM"
+        const val PATH_OPERATION_STATUS = "/Operations/GetStatus"
         const val PATH_PROMISED_PARAMS = "/Payment/PromisedPaymentParams"
         const val PATH_PROMISED_SET = "/MobileAPI/1/Payment/PromisedPayment"
         const val PATH_BUDGET_MSISDN = "/CorporateBudget/ProvidedRulesByMSISDN"
@@ -836,6 +895,11 @@ class LineApi(private val c: MtsClient) {
                 path.endsWith(PATH_COMMENTS_GET) || path.endsWith(PATH_ACC_COMMENTS_GET) -> "Комментарии"
                 path.endsWith(PATH_COMMENTS_SET) || path.endsWith(PATH_ACC_COMMENTS_SET) -> "Изменение комментария"
                 path.endsWith(PATH_SIM_TYPE) -> "Тип SIM-карты"
+                path.endsWith(PATH_SIM_AVAILABLE) -> "Свободные SIM-карты"
+                path.endsWith(PATH_SIM_CHANGE) -> "Замена SIM-карты"
+                path.endsWith(PATH_ESIM_CHANGE) -> "Замена на eSIM"
+                path.endsWith(PATH_ESIM_RESEND) -> "Повторный QR-код eSIM"
+                path.endsWith(PATH_OPERATION_STATUS) -> "Статус замены SIM"
                 path.endsWith(PATH_PROMISED_PARAMS) -> "Обещанный платёж: условия"
                 path.endsWith(PATH_PROMISED_SET) -> "Обещанный платёж"
                 path.endsWith(PATH_BUDGET_MSISDN) || path.endsWith(PATH_BUDGET_ACCOUNT) -> "Корпоративный бюджет"
