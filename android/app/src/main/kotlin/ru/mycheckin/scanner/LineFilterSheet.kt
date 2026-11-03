@@ -112,9 +112,9 @@ object LineFilterSheet {
         // Блокировки
         singleChips("Блокировки", BlockRule.entries.map { it.title to (it == f.blocks) }) { f = f.copy(blocks = BlockRule.entries[it]) }
         multiChips("Вид блокировки", LineApi.BLOCK_NAMES.toList(), f.blockCodes) { f = f.copy(blockCodes = it) }
-        val ages = listOf(null to "Не важно", 30 to "1 мес", 182 to "6 мес", 365 to "1 год", 730 to "2 года", 1095 to "3 года")
-        singleChips("Блокировка действует дольше", ages.map { it.second to (it.first == f.blockOlderDays) }) {
-            f = f.copy(blockOlderDays = ages[it].first)
+        val blockAges = listOf(null to "Не важно", 30 to "1 мес", 182 to "6 мес", 365 to "1 год", 730 to "2 года", 1095 to "3 года")
+        singleChips("Блокировка действует дольше", blockAges.map { it.second to (it.first == f.blockOlderDays) }) {
+            f = f.copy(blockOlderDays = blockAges[it].first)
         }
         col.addView(v.hint("Считается от даты, с которой МТС поставил блокировку. Вместе с «Вид блокировки» — только по выбранным видам."))
 
