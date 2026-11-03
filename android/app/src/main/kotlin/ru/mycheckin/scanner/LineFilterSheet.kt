@@ -145,13 +145,34 @@ object LineFilterSheet {
                 else -> "Всего разных услуг на номерах: ${allServices.size}. Можно выбрать несколько."
             }
         }
-        val serviceSearch = ui.field("Найти услугу", Ui.Kind.TEXT, helper = "Например: VIP, 30 ГБ, 70 ГБ — затем отметьте нужные")
-        serviceSearch.edit.addTextChangedListener(object : TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
-            override fun afterTextChanged(s: Editable?) = renderServices(s?.toString().orEmpty())
-        })
-        col.addView(serviceSearch.layout)
+        // Поле с подсказками: с первой буквы выпадают услуги, которые есть на номерах (слово — в любом месте названия).
+        val serviceLayout = com.google.android.material.textfield.TextInputLayout(a, null, com.google.android.material.R.attr.textInputOutlinedStyle).apply {
+            hint = "Найти услугу"
+            helperText = "Начните писать: VIP, 30 ГБ, 70 ГБ — выберите из подсказок"
+            setStartIconDrawable(R.drawable.ic_search)
+            endIconMode = com.google.android.material.textfield.TextInputLayout.END_ICON_CLEAR_TEXT
+            layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = v.px(8) }
+        }
+        val suggest = SuggestAdapter(a, allServices)
+        val serviceSearch = com.google.android.material.textfield.MaterialAutoCompleteTextView(serviceLayout.context).apply {
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            threshold = 1
+            setAdapter(suggest)
+            setOnItemClickListener { _, _, pos, _ ->
+                val name = suggest.nameAt(pos) ?: return@setOnItemClickListener
+                chosen += name
+                f = f.copy(services = chosen.toSet()); count()
+                setText("", false)
+                renderServices("")
+            }
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+                override fun afterTextChanged(s: Editable?) = renderServices(s?.toString().orEmpty())
+            })
+        }
+        serviceLayout.addView(serviceSearch)
+        col.addView(serviceLayout)
         col.addView(serviceChips)
         col.addView(serviceInfo)
         renderServices("")

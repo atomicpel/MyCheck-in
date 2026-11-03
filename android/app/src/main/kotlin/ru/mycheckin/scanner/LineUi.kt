@@ -173,3 +173,38 @@ class LineViews(private val context: Context) {
 
     fun lp(w: Int = -1, h: Int = -2, top: Int = 0) = ViewGroup.MarginLayoutParams(w, h).apply { topMargin = px(top) }
 }
+
+/**
+ * Подсказки для поиска услуги: «название · N номеров». Совпадение — все слова в любом месте названия,
+ * без учёта регистра (стандартный ArrayAdapter ищет только с начала слов).
+ */
+class SuggestAdapter(context: Context, private val all: List<Pair<String, Int>>) :
+    android.widget.ArrayAdapter<String>(context, android.R.layout.simple_dropdown_item_1line, ArrayList<String>()) {
+
+    private var shown: List<Pair<String, Int>> = emptyList()
+
+    fun nameAt(position: Int): String? = shown.getOrNull(position)?.first
+
+    private fun label(p: Pair<String, Int>) = "${p.first} · ${p.second} ${LineFormat.plural(p.second, "номер", "номера", "номеров")}"
+
+    private val filter = object : android.widget.Filter() {
+        override fun performFiltering(q: CharSequence?): FilterResults {
+            val words = q?.toString().orEmpty().lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }
+            val found = if (words.isEmpty()) all.take(30) else all.filter { (n, _) -> n.lowercase().let { t -> words.all { it in t } } }.take(50)
+            return FilterResults().apply { values = found; count = found.size }
+        }
+
+        @Suppress("UNCHECKED_CAST")
+        override fun publishResults(q: CharSequence?, r: FilterResults?) {
+            shown = (r?.values as? List<Pair<String, Int>>).orEmpty()
+            clear()
+            addAll(shown.map { label(it) })
+            if (shown.isEmpty()) notifyDataSetInvalidated() else notifyDataSetChanged()
+        }
+
+        // В поле после выбора не подставляем «название · N номеров» — выбор обрабатывается отдельно.
+        override fun convertResultToString(resultValue: Any?): CharSequence = ""
+    }
+
+    override fun getFilter(): android.widget.Filter = filter
+}
