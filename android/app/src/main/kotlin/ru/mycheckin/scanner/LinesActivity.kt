@@ -606,7 +606,7 @@ class LinesActivity : AppCompatActivity() {
             x.charges?.let { tile("Начислено за месяц", Money.format(it), null) { setFilter(LineFilter(sort = ru.mycheckin.passport.mts.LineSort.CHARGES)) } }
             x.fee?.let { tile("Абонплата в месяц", Money.format(it), null) { setFilter(LineFilter(sort = ru.mycheckin.passport.mts.LineSort.FEE)) } }
             tile("Заблокировано", x.blocked.toString(), if (x.blocked > 0) R.color.bad else null) { setFilter(LineFilter(blocks = BlockRule.SOME)) }
-            tile("Баланс у порога", x.low.toString(), if (x.low > 0) R.color.warn else null) { setFilter(LineFilter.PRESETS[1]) }
+            tile("Баланс у порога", x.low.toString(), if (x.low > 0) R.color.warn else null) { setFilter(LineFilter.PRESETS.first { it.name == "Баланс у порога" }) }
             tile("В роуминге", x.roaming.toString(), if (x.roaming > 0) R.color.sent else null) { setFilter(LineFilter(roaming = Tri.YES)) }
             if (x.notLoaded > 0) tile("Без сведений", x.notLoaded.toString(), R.color.neutral, "нажмите — загрузить") {
                 refreshStale(shown.filter { !it.snap.loaded }.map { it.msisdn })
@@ -767,7 +767,10 @@ class LinesActivity : AppCompatActivity() {
             } else h.packageRow.visibility = View.GONE
 
             h.badges.removeAllViews()
-            s.blocks.orEmpty().forEach { b -> h.badges.addView(v.pill(LineApi.BLOCK_NAMES[b.code.uppercase()] ?: b.name, R.color.bad, solid = true)) }
+            s.blocks.orEmpty().forEach { b ->
+                val name = LineApi.BLOCK_NAMES[b.code.uppercase()] ?: b.name
+                h.badges.addView(v.pill(b.since?.let { "$name · ${LineFormat.duration(it)}" } ?: name, R.color.bad, solid = true))
+            }
             if (s.abroad) h.badges.addView(v.pill("Роуминг: ${s.location?.countryName ?: "за границей"}", R.color.sent))
             if (s.hasForwarding) h.badges.addView(v.pill("Переадресация", R.color.neutral))
             if (s.isEsim) h.badges.addView(v.pill("eSIM", R.color.neutral))

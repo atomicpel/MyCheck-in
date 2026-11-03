@@ -251,4 +251,33 @@ class LineDataTest {
         assertNull(LineDigest.decode("мусор"))
         assertTrue(LineDigest.encode(full).length < 3000)
     }
+
+    @Test fun oldBlocksAndServiceChoice() {
+        val today = LineSnapshot.toLocal(now)
+        fun line(m: String, blockedYearsAgo: Long?, vararg services: String) = row(m, LineSnapshot(m, "A",
+            blocks = blockedYearsAgo?.let { listOf(ProductItem("BL0005", "Добровольная блокировка", since = today.minusDays(it * 365 + 5))) } ?: emptyList(),
+            services = services.mapIndexed { i, n -> ProductItem("S$i", n) }))
+        val rows = listOf(
+            line("79160000001", 3, "Интернет VIP"),
+            line("79160000002", 1, "Пакет 30 ГБ"),
+            line("79160000003", null, "Пакет 70 ГБ", "Кто звонил"),
+            line("79160000004", 0, "Кто звонил"),
+        )
+        fun names(f: LineFilter) = f.apply(rows, now).map { it.msisdn.takeLast(1) }
+        // Блокировка дольше двух лет.
+        assertEquals(listOf("1"), names(LineFilter(blocks = BlockRule.SOME, blockOlderDays = 730)))
+        assertEquals(listOf("1", "2"), names(LineFilter(blockOlderDays = 365)))
+        assertEquals(emptyList(), names(LineFilter(blockOlderDays = 365, blockCodes = setOf("BL0009"))))
+        // Несколько услуг из списка — подходит любая.
+        assertEquals(listOf("1", "2", "3"), names(LineFilter(services = setOf("Интернет VIP", "Пакет 30 ГБ", "Пакет 70 ГБ"))))
+        assertEquals(listOf("4"), names(LineFilter(services = setOf("Интернет VIP", "Пакет 30 ГБ", "Пакет 70 ГБ"), serviceMode = Tri.NO)))
+        // Текст: варианты через запятую.
+        assertEquals(listOf("1", "2", "3"), names(LineFilter(serviceText = "vip, 30 гб, 70 гб")))
+        // Давние блокировки — первыми, без блокировки — в конце.
+        assertEquals(listOf("1", "2", "4", "3"), names(LineFilter(sort = LineSort.BLOCK_AGE)))
+        val f = LineFilter(services = setOf("Интернет VIP"), blockOlderDays = 730)
+        assertEquals(f, LineFilter.fromJson(f.toJson()))
+        assertEquals(2, f.activeCount)
+        assertEquals(730, LineFilter.PRESETS.first { it.name == "Блокировка > 2 лет" }.blockOlderDays)
+    }
 }

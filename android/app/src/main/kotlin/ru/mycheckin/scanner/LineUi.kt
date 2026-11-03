@@ -44,6 +44,17 @@ object LineFormat {
         }
     }
 
+    /** Сколько времени прошло с [since]: «3 дн.», «5 мес», «2 г 3 мес». */
+    fun duration(since: LocalDateTime, now: LocalDateTime = LocalDateTime.now()): String {
+        val p = java.time.Period.between(since.toLocalDate(), now.toLocalDate())
+        return when {
+            p.years > 0 -> "${p.years} ${plural(p.years, "год", "года", "лет")}" +
+                if (p.months > 0) " ${p.months} мес" else ""
+            p.months > 0 -> "${p.months} мес"
+            else -> "${p.days.coerceAtLeast(0)} дн."
+        }
+    }
+
     fun number(v: Double): String = if (v == Math.floor(v) && v < 1e9) String.format(RU, "%,.0f", v).replace(' ', ' ')
     else String.format(RU, "%,.1f", v).replace(' ', ' ')
 

@@ -112,19 +112,52 @@ object LineFilterSheet {
         // Блокировки
         singleChips("Блокировки", BlockRule.entries.map { it.title to (it == f.blocks) }) { f = f.copy(blocks = BlockRule.entries[it]) }
         multiChips("Вид блокировки", LineApi.BLOCK_NAMES.toList(), f.blockCodes) { f = f.copy(blockCodes = it) }
+        val ages = listOf(null to "Не важно", 30 to "1 мес", 182 to "6 мес", 365 to "1 год", 730 to "2 года", 1095 to "3 года")
+        singleChips("Блокировка действует дольше", ages.map { it.second to (it.first == f.blockOlderDays) }) {
+            f = f.copy(blockOlderDays = ages[it].first)
+        }
+        col.addView(v.hint("Считается от даты, с которой МТС поставил блокировку. Вместе с «Вид блокировки» — только по выбранным видам."))
 
-        // Услуги и тариф
-        col.addView(v.label("Услуга"))
-        val service = ui.field("Название или код услуги", Ui.Kind.TEXT, helper = "Например: «интернет», «БИТ», PE0526")
-        service.value = f.serviceText
-        service.edit.addTextChangedListener(object : TextWatcher {
+        // Услуги: выбор из того, что реально подключено на номерах, с числом номеров. Любая из выбранных.
+        col.addView(v.label("Услуги"))
+        val allServices = rows.flatMap { r -> r.snap.services.orEmpty().map { it.name }.distinct() }
+            .groupingBy { it }.eachCount().toList().sortedByDescending { it.second }
+        val chosen = f.services.toMutableSet()
+        val serviceChips = v.chipGroup(single = false)
+        val serviceInfo = v.hint("")
+        fun renderServices(q: String) {
+            serviceChips.removeAllViews()
+            val words = q.lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }
+            // Выбранные — всегда видны; остальные — по поиску, самые частые первыми.
+            val matching = allServices.filter { (n, _) -> n in chosen || words.all { it in n.lowercase() } }
+            val shownList = matching.sortedByDescending { it.first in chosen }.take(60)
+            shownList.forEach { (name, n) ->
+                serviceChips.addView(v.chip("$name · $n", checked = name in chosen).apply {
+                    setOnCheckedChangeListener { _, on ->
+                        if (on) chosen += name else chosen -= name
+                        f = f.copy(services = chosen.toSet()); count()
+                    }
+                })
+            }
+            serviceInfo.text = when {
+                allServices.isEmpty() -> "Услуги ещё не загружены из МТС."
+                matching.size > shownList.size -> "Показано ${shownList.size} из ${matching.size} — уточните поиск."
+                else -> "Всего разных услуг на номерах: ${allServices.size}. Можно выбрать несколько."
+            }
+        }
+        val serviceSearch = ui.field("Найти услугу", Ui.Kind.TEXT, helper = "Например: VIP, 30 ГБ, 70 ГБ — затем отметьте нужные")
+        serviceSearch.edit.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
-            override fun afterTextChanged(s: Editable?) { f = f.copy(serviceText = s?.toString().orEmpty()); count() }
+            override fun afterTextChanged(s: Editable?) = renderServices(s?.toString().orEmpty())
         })
-        col.addView(service.layout)
+        col.addView(serviceSearch.layout)
+        col.addView(serviceChips)
+        col.addView(serviceInfo)
+        renderServices("")
+        if (f.serviceText.isNotBlank()) col.addView(v.hint("Также по словам: «${f.serviceText}» (из сохранённого набора)."))
         val modeGroup = v.chipGroup(single = true, required = true)
-        listOf(Tri.YES to "Подключена", Tri.NO to "Не подключена").forEach { (t, title) ->
+        listOf(Tri.YES to "Подключена любая из выбранных", Tri.NO to "Не подключена ни одна").forEach { (t, title) ->
             modeGroup.addView(v.chip(title, checked = f.serviceMode == t).apply { setOnClickListener { f = f.copy(serviceMode = t); count() } })
         }
         col.addView(modeGroup)

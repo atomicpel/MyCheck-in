@@ -1,5 +1,6 @@
 package ru.mycheckin.passport.mts
 
+import java.time.LocalDateTime
 import kotlin.math.abs
 
 /*
@@ -109,6 +110,10 @@ data class LineSnapshot(
     val oldestAt: Long? get() = fetchedAt.values.minOrNull()
 
     val blockCodes: Set<String> get() = blocks.orEmpty().map { it.code.uppercase() }.toSet()
+
+    /** С какого времени действует самая давняя блокировка (только виды из [codes], если заданы). */
+    fun oldestBlockSince(codes: Set<String> = emptySet()): LocalDateTime? =
+        blocks.orEmpty().filter { codes.isEmpty() || it.code.uppercase() in codes }.mapNotNull { it.since }.minOrNull()
     val isBlocked: Boolean get() = blocks.orEmpty().isNotEmpty()
     val voluntaryBlock: Boolean get() = LineApi.VOLUNTARY_BLOCK in blockCodes
     val abroad: Boolean get() = location?.abroad == true
@@ -152,6 +157,10 @@ data class LineSnapshot(
 
     companion object {
         const val NO_LIMIT = 10_000_000.0
+
+        /** Время в миллисекундах — местное (так МТС присылает даты при applyTimeZone=true). */
+        fun toLocal(millis: Long): LocalDateTime =
+            LocalDateTime.ofInstant(java.time.Instant.ofEpochMilli(millis), java.time.ZoneId.systemDefault())
         const val DEFAULT_LOW_MARGIN = 300.0
 
         private fun perMonth(v: Double, unit: String?) = if (unit.equals("DAY", true)) v * 30 else v
@@ -225,7 +234,8 @@ enum class BlockRule(val title: String) { ANY("Любые"), NONE("Без бло
 enum class LineSort(val title: String) {
     PHONE("По номеру"), OWNER("По владельцу"), BALANCE("Сначала с меньшим балансом"),
     CHARGES("Сначала с большими начислениями"), FEE("Сначала с большей абонплатой"),
-    PACKAGE("Сначала с меньшим остатком пакета"), UPDATED("Сначала давно не обновлявшиеся")
+    PACKAGE("Сначала с меньшим остатком пакета"), UPDATED("Сначала давно не обновлявшиеся"),
+    BLOCK_AGE("Сначала давние блокировки")
 }
 
 /**
@@ -243,6 +253,10 @@ data class LineFilter(
     val blocks: BlockRule = BlockRule.ANY,
     val blockCodes: Set<String> = emptySet(),
     val serviceText: String = "",
+    /** Услуги по названию (из списка подключённых на номерах): подходит любая из выбранных. */
+    val services: Set<String> = emptySet(),
+    /** Блокировка (вида из [blockCodes], если задан) действует дольше стольких дней. */
+    val blockOlderDays: Int? = null,
     val serviceMode: Tri = Tri.YES,
     val tariffs: Set<String> = emptySet(),
     val roaming: Tri = Tri.ANY,
@@ -261,7 +275,7 @@ data class LineFilter(
     /** Сколько условий задано (без поиска и сортировки) — для значка на кнопке «Фильтры». */
     val activeCount: Int get() = listOf(
         contracts.isNotEmpty(), accounts.isNotEmpty(), balance != BalanceRule.ANY, blocks != BlockRule.ANY || blockCodes.isNotEmpty(),
-        serviceText.isNotBlank(), tariffs.isNotEmpty(), roaming != Tri.ANY, forwarding != Tri.ANY, owner != Tri.ANY,
+        serviceText.isNotBlank() || services.isNotEmpty(), blockOlderDays != null, tariffs.isNotEmpty(), roaming != Tri.ANY, forwarding != Tri.ANY, owner != Tri.ANY,
         esim != Tri.ANY, inMts != Tri.ANY, chargesAbove != null, feeAbove != null, packageBelowPercent != null,
         withComment != Tri.ANY, staleHours != null, withErrors,
     ).count { it }
@@ -288,11 +302,16 @@ data class LineFilter(
                 if (blockCodes.isNotEmpty() && s.blockCodes.none { it in blockCodes }) return false
             }
         }
-        if (serviceText.isNotBlank()) {
-            val words = serviceText.lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }
+        blockOlderDays?.let { days ->
+            val since = s.oldestBlockSince(blockCodes) ?: return false
+            if (java.time.Duration.between(since, LineSnapshot.toLocal(now)).toDays() < days) return false
+        }
+        if (serviceText.isNotBlank() || services.isNotEmpty()) {
+            // Текст: варианты через запятую или «;» — подходит любой; слова внутри варианта — все.
+            val variants = serviceText.lowercase().split(',', ';').map { v -> v.split(Regex("\\s+")).filter { it.isNotEmpty() } }.filter { it.isNotEmpty() }
             val has = s.services.orEmpty().any { p ->
                 val t = (p.name + " " + p.code).lowercase()
-                words.all { it in t }
+                p.name in services || variants.any { words -> words.all { it in t } }
             }
             if (s.services == null) return false
             if (serviceMode == Tri.YES && !has) return false
@@ -324,6 +343,8 @@ data class LineFilter(
         LineSort.FEE -> rows.sortedWith(compareBy<LineRow> { it.snap.monthlyFee == null }.thenByDescending { it.snap.monthlyFee ?: 0.0 })
         LineSort.PACKAGE -> rows.sortedWith(compareBy<LineRow> { it.snap.lowestPackage == null }.thenBy { it.snap.lowestPackage?.share ?: 1.0 })
         LineSort.UPDATED -> rows.sortedBy { it.snap.oldestAt ?: 0L }
+        LineSort.BLOCK_AGE -> rows.sortedWith(compareBy<LineRow> { it.snap.oldestBlockSince(blockCodes) == null }
+            .thenBy { it.snap.oldestBlockSince(blockCodes) })
     }
 
     private fun tri(t: Tri, v: Boolean?): Boolean = when (t) {
@@ -336,7 +357,8 @@ data class LineFilter(
         "name" to name, "query" to query, "contracts" to contracts.toList(), "accounts" to accounts.toList(),
         "balance" to balance.name, "balanceBelow" to balanceBelow, "lowMargin" to lowMargin,
         "blocks" to blocks.name, "blockCodes" to blockCodes.toList(),
-        "serviceText" to serviceText, "serviceMode" to serviceMode.name, "tariffs" to tariffs.toList(),
+        "serviceText" to serviceText, "services" to services.toList(), "blockOlderDays" to blockOlderDays?.toLong(),
+        "serviceMode" to serviceMode.name, "tariffs" to tariffs.toList(),
         "roaming" to roaming.name, "forwarding" to forwarding.name, "owner" to owner.name, "esim" to esim.name,
         "inMts" to inMts.name, "chargesAbove" to chargesAbove, "feeAbove" to feeAbove,
         "packageBelowPercent" to packageBelowPercent, "withComment" to withComment.name, "staleHours" to staleHours,
@@ -362,6 +384,8 @@ data class LineFilter(
             blocks = enumOf(j.field("blocks"), BlockRule.ANY),
             blockCodes = set(j.field("blockCodes")),
             serviceText = j.field("serviceText").str().orEmpty(),
+            services = set(j.field("services")),
+            blockOlderDays = j.field("blockOlderDays").num()?.toInt(),
             serviceMode = enumOf(j.field("serviceMode"), Tri.YES),
             tariffs = set(j.field("tariffs")),
             roaming = enumOf(j.field("roaming"), Tri.ANY),
@@ -384,6 +408,7 @@ data class LineFilter(
         /** Готовые наборы для быстрых кнопок. */
         val PRESETS = listOf(
             LineFilter(name = "Заблокированные", blocks = BlockRule.SOME),
+            LineFilter(name = "Блокировка > 2 лет", blocks = BlockRule.SOME, blockOlderDays = 730, sort = LineSort.BLOCK_AGE),
             LineFilter(name = "Баланс у порога", balance = BalanceRule.LOW, sort = LineSort.BALANCE),
             LineFilter(name = "В роуминге", roaming = Tri.YES),
             LineFilter(name = "Мало пакета", packageBelowPercent = 20, sort = LineSort.PACKAGE),

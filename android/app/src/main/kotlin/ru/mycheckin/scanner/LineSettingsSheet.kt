@@ -195,7 +195,7 @@ object LineExport {
             val s = r.snap
             listOf(
                 r.msisdn, r.owner, r.contractTitle, r.accountNo, r.iccid, n(s.balance?.amount), n(s.blockThreshold), n(s.unpaid), n(s.charges),
-                s.tariff?.name.orEmpty(), n(s.monthlyFee), s.blocks.orEmpty().joinToString(", ") { it.name },
+                s.tariff?.name.orEmpty(), n(s.monthlyFee), s.blocks.orEmpty().joinToString(", ") { b -> b.name + (b.since?.let { " с ${it.format(SimFormat.DATE)} (${LineFormat.duration(it)})" } ?: "") },
                 if (s.abroad) s.location?.countryName ?: "за границей" else if (s.location != null) "нет" else "",
                 s.forwarding.orEmpty().joinToString(", ") { "${it.title} → ${it.address}" }, s.simType.orEmpty(),
                 s.packages.joinToString(", ") { "${LineFormat.shortKind(it.kind)}: ${LineFormat.counter(it)}" },
